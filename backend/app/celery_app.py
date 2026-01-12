@@ -1,0 +1,226 @@
+"""
+Celery configuration for background task processing.
+
+Handles async bulk scanning of stocks and cache warming.
+"""
+import os
+
+# Disable MPS/Metal before any PyTorch imports to avoid fork() issues on macOS
+# Must be set at the very start before any libraries that use PyTorch are imported
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
+# Disable macOS Objective-C fork safety check
+# Required for libraries like curl_cffi (used by Sotwe scraper) that trigger
+# Objective-C initialization after Celery forks worker processes
+os.environ['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES'
+
+from celery import Celery
+from celery.schedules import crontab
+from .config import settings
+
+# Import scanners to trigger registration
+# This ensures all screeners are registered with the registry before tasks run
+import app.scanners  # noqa: F401
+
+# Create Celery application instance
+celery_app = Celery(
+    "stock_scanner",
+    broker=settings.celery_broker_url,
+    backend=settings.celery_result_backend,
+    include=[
+        'app.tasks.scan_tasks',
+        'app.tasks.cache_tasks',  # Cache warming tasks
+        'app.tasks.breadth_tasks',  # Market breadth tasks
+        'app.tasks.fundamentals_tasks',  # Fundamental data caching tasks
+        'app.tasks.group_rank_tasks',  # IBD group ranking tasks
+        'app.tasks.theme_discovery_tasks',  # Theme discovery pipeline tasks
+        'app.tasks.universe_tasks',  # Stock universe management tasks
+    ]
+)
+
+# Configure Celery
+celery_app.conf.update(
+    task_serializer='json',
+    accept_content=['json'],
+    result_serializer='json',
+    timezone='UTC',
+    enable_utc=True,
+    task_track_started=True,  # Track when tasks start
+    task_time_limit=86400,  # 24 hours max per task (for very large scans like 9650 stocks)
+    task_soft_time_limit=82800,  # Soft limit at 23 hours
+    worker_prefetch_multiplier=1,  # Don't prefetch tasks
+    broker_connection_retry_on_startup=True,  # Retry connecting to broker on startup
+)
+
+# Task routing: Route all data-fetching tasks to serialized queue
+# Run worker with: celery -A app.celery_app worker -Q celery,data_fetch -c 1
+celery_app.conf.task_routes = {
+    # Cache tasks (yfinance)
+    'app.tasks.cache_tasks.daily_cache_warmup': {'queue': 'data_fetch'},
+    'app.tasks.cache_tasks.prewarm_all_active_symbols': {'queue': 'data_fetch'},
+    'app.tasks.cache_tasks.weekly_full_refresh': {'queue': 'data_fetch'},
+    'app.tasks.cache_tasks.warm_spy_cache': {'queue': 'data_fetch'},
+    'app.tasks.cache_tasks.warm_top_symbols': {'queue': 'data_fetch'},
+    'app.tasks.cache_tasks.force_refresh_stale_intraday': {'queue': 'data_fetch'},
+    'app.tasks.cache_tasks.auto_refresh_after_close': {'queue': 'data_fetch'},
+    # Breadth tasks (yfinance on cache miss)
+    'app.tasks.breadth_tasks.calculate_daily_breadth': {'queue': 'data_fetch'},
+    'app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill': {'queue': 'data_fetch'},
+    # Group rank tasks (yfinance on cache miss)
+    'app.tasks.group_rank_tasks.calculate_daily_group_rankings': {'queue': 'data_fetch'},
+    'app.tasks.group_rank_tasks.gapfill_group_rankings': {'queue': 'data_fetch'},
+    'app.tasks.group_rank_tasks.backfill_group_rankings': {'queue': 'data_fetch'},
+    'app.tasks.group_rank_tasks.backfill_group_rankings_1year': {'queue': 'data_fetch'},
+    # Fundamentals tasks (finviz + yfinance)
+    'app.tasks.fundamentals_tasks.refresh_all_fundamentals': {'queue': 'data_fetch'},
+    'app.tasks.fundamentals_tasks.refresh_all_fundamentals_hybrid': {'queue': 'data_fetch'},
+    'app.tasks.fundamentals_tasks.refresh_symbol_fundamentals': {'queue': 'data_fetch'},
+    'app.tasks.fundamentals_tasks.populate_initial_cache': {'queue': 'data_fetch'},
+    'app.tasks.fundamentals_tasks.refresh_fundamentals_yfinance_only': {'queue': 'data_fetch'},
+    'app.tasks.fundamentals_tasks.refresh_symbols_hybrid': {'queue': 'data_fetch'},
+    # Scan tasks (yfinance)
+    'app.tasks.scan_tasks.run_bulk_scan': {'queue': 'data_fetch'},
+    'app.tasks.scan_tasks.scan_stock_batch': {'queue': 'data_fetch'},
+    # Universe tasks (finviz)
+    'app.tasks.universe_tasks.refresh_stock_universe': {'queue': 'data_fetch'},
+    'app.tasks.universe_tasks.refresh_sp500_membership': {'queue': 'data_fetch'},
+}
+
+# Optional: Configure result expiration
+celery_app.conf.result_expires = 86400  # Results expire after 24 hours
+
+# Celery Beat Schedule - Periodic Tasks
+# All data-fetching tasks route to 'data_fetch' queue for serialization
+if settings.cache_warmup_enabled:
+    celery_app.conf.beat_schedule = {
+        # Daily cache warmup after market close (includes SPY + all active symbols)
+        'daily-cache-warmup': {
+            'task': 'app.tasks.cache_tasks.daily_cache_warmup',
+            'schedule': crontab(
+                hour=settings.cache_warm_hour,
+                minute=settings.cache_warm_minute,
+                day_of_week='1-5'  # Monday-Friday only
+            ),
+            'options': {'queue': 'data_fetch'}
+        },
+
+        # NOTE: nightly-prewarm-all-symbols removed - redundant with daily_cache_warmup
+
+        # Weekly full refresh (Sunday morning)
+        'weekly-full-refresh': {
+            'task': 'app.tasks.cache_tasks.weekly_full_refresh',
+            'schedule': crontab(
+                hour=settings.cache_weekly_hour,
+                minute=0,
+                day_of_week=settings.cache_weekly_day
+            ),
+            'options': {'queue': 'data_fetch'}
+        },
+
+        # Daily breadth calculation with automatic gap-fill
+        # (queued after cache warmup via serialized queue)
+        'daily-breadth-calculation': {
+            'task': 'app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill',
+            'schedule': crontab(
+                hour=settings.cache_warm_hour,
+                minute=settings.cache_warm_minute + 5,  # 5 minutes after cache warmup
+                day_of_week='1-5'  # Monday-Friday only
+            ),
+            'options': {'queue': 'data_fetch'}
+        },
+
+        # Weekly fundamental refresh (Friday evening after market close)
+        'weekly-fundamental-refresh': {
+            'task': 'app.tasks.fundamentals_tasks.refresh_all_fundamentals',
+            'schedule': crontab(
+                hour=settings.fundamental_refresh_hour,  # 6 PM ET (18:00)
+                minute=0,
+                day_of_week=settings.fundamental_refresh_day  # Friday = 5
+            ),
+            'options': {'queue': 'data_fetch'}
+        },
+
+        # Daily IBD group ranking calculation (queued after cache warmup via serialized queue)
+        'daily-group-ranking-calculation': {
+            'task': 'app.tasks.group_rank_tasks.calculate_daily_group_rankings',
+            'schedule': crontab(
+                hour=settings.cache_warm_hour,
+                minute=settings.cache_warm_minute + 10,  # 10 minutes after cache warmup
+                day_of_week='1-5'  # Monday-Friday only
+            ),
+            'options': {'queue': 'data_fetch'}
+        },
+
+        # Weekly stock universe refresh (Sunday 3 AM ET - after weekly-full-refresh)
+        # Adds new stocks, deactivates removed stocks, updates metadata
+        'weekly-universe-refresh': {
+            'task': 'app.tasks.universe_tasks.refresh_stock_universe',
+            'schedule': crontab(
+                hour=3,  # 3 AM ET
+                minute=0,
+                day_of_week=0  # Sunday
+            ),
+            'options': {'queue': 'data_fetch'}
+        },
+
+        # Auto-refresh stale intraday data after market close (4:45 PM ET)
+        # Detects and refreshes symbols with data fetched during market hours
+        'auto-refresh-after-close': {
+            'task': 'app.tasks.cache_tasks.auto_refresh_after_close',
+            'schedule': crontab(
+                hour=16,  # 4 PM ET (UTC-5 = 21 UTC, but Celery runs in local time)
+                minute=45,
+                day_of_week='1-5'  # Monday-Friday only
+            ),
+            'options': {'queue': 'data_fetch'}
+        },
+
+        # Weekly cleanup of orphaned scans (cancelled, stale running/queued)
+        # Runs Sunday at 2 AM ET, before weekly-full-refresh
+        'weekly-orphaned-scan-cleanup': {
+            'task': 'app.tasks.cache_tasks.cleanup_orphaned_scans',
+            'schedule': crontab(
+                hour=2,  # 2 AM ET
+                minute=0,
+                day_of_week=0  # Sunday
+            ),
+        },
+
+        # Monthly cleanup of old price data (keep 5 years)
+        # Runs 1st of each month at 1 AM ET
+        # Low priority - prevents unbounded database growth over time
+        'monthly-price-data-cleanup': {
+            'task': 'app.tasks.cache_tasks.cleanup_old_price_data',
+            'schedule': crontab(
+                hour=1,  # 1 AM ET
+                minute=0,
+                day_of_month=1  # 1st of month
+            ),
+            'kwargs': {'keep_years': 5},
+        },
+
+        # Weekly theme consolidation - identifies and merges duplicate themes
+        # Runs Sunday at 4 AM ET (after weekly-universe-refresh)
+        # Uses embedding similarity + LLM verification for high-quality merges
+        'weekly-theme-consolidation': {
+            'task': 'app.tasks.theme_discovery_tasks.consolidate_themes',
+            'schedule': crontab(
+                hour=4,  # 4 AM ET
+                minute=0,
+                day_of_week=0  # Sunday
+            ),
+            'kwargs': {'dry_run': False},
+        },
+
+        # Poll content sources based on their fetch_interval_minutes
+        # Runs every 15 minutes to check which sources are due for refresh
+        # Sources are only fetched if their last_fetched_at + fetch_interval_minutes < now
+        'poll-content-sources': {
+            'task': 'app.tasks.theme_discovery_tasks.poll_due_sources',
+            'schedule': crontab(minute='*/15'),  # Every 15 minutes
+        },
+    }
+
+if __name__ == '__main__':
+    celery_app.start()

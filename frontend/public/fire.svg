@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="cometTail" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ff4500"/>
+      <stop offset="40%" style="stop-color:#ff6b00"/>
+      <stop offset="70%" style="stop-color:#ff8c00"/>
+      <stop offset="100%" style="stop-color:#ffd700;stop-opacity:0.3"/>
+    </linearGradient>
+    <linearGradient id="cometHead" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffffff"/>
+      <stop offset="50%" style="stop-color:#fffacd"/>
+      <stop offset="100%" style="stop-color:#ffd700"/>
+    </linearGradient>
+  </defs>
+  <!-- Comet tail -->
+  <path fill="url(#cometTail)" d="M2 2 Q8 12, 18 18 Q14 20, 12 24 Q10 20, 6 18 Q12 14, 2 2Z"/>
+  <path fill="url(#cometTail)" opacity="0.7" d="M4 1 Q10 8, 16 14 Q12 18, 10 22 Q8 17, 5 14 Q10 10, 4 1Z"/>
+  <!-- Comet head -->
+  <circle cx="22" cy="22" r="9" fill="url(#cometHead)"/>
+  <circle cx="21" cy="21" r="6" fill="#ffffff" opacity="0.8"/>
+  <circle cx="20" cy="20" r="3" fill="#ffffff"/>
+</svg>

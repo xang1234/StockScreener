@@ -1,0 +1,468 @@
+/**
+ * API client for Theme Discovery endpoints.
+ */
+import apiClient from './client';
+
+/**
+ * Get available pipelines.
+ *
+ * @returns {Promise<Object>} List of available pipelines (technical, fundamental)
+ */
+export const getPipelines = async () => {
+  const response = await apiClient.get('/v1/themes/pipelines');
+  return response.data;
+};
+
+/**
+ * Get current theme rankings.
+ *
+ * @param {number} limit - Maximum number of themes to return (default: 20)
+ * @param {string|null} status - Filter by status: emerging, trending, fading, dormant
+ * @param {string[]|null} sourceTypes - Filter by source types: substack, twitter, news, reddit
+ * @param {string} pipeline - Pipeline: technical or fundamental (default: 'technical')
+ * @param {number} offset - Number of themes to skip for pagination (default: 0)
+ * @returns {Promise<Object>} Rankings response with date, total_themes, pipeline, and rankings array
+ */
+export const getThemeRankings = async (limit = 20, status = null, sourceTypes = null, pipeline = 'technical', offset = 0) => {
+  const params = { limit, pipeline, offset };
+  if (status) params.status = status;
+  if (sourceTypes?.length) params.source_types = sourceTypes.join(',');
+
+  const response = await apiClient.get('/v1/themes/rankings', { params });
+  return response.data;
+};
+
+/**
+ * Get emerging themes (newly discovered with accelerating mentions).
+ *
+ * @param {number} minVelocity - Minimum mention velocity (default: 1.5)
+ * @param {number} minMentions - Minimum mentions in 7 days (default: 3)
+ * @param {string} pipeline - Pipeline: technical or fundamental (default: 'technical')
+ * @returns {Promise<Object>} Object with count and themes array
+ */
+export const getEmergingThemes = async (minVelocity = 1.5, minMentions = 3, pipeline = 'technical') => {
+  const response = await apiClient.get('/v1/themes/emerging', {
+    params: { min_velocity: minVelocity, min_mentions: minMentions, pipeline }
+  });
+  return response.data;
+};
+
+/**
+ * Get detailed information about a specific theme.
+ *
+ * @param {number} themeId - Theme cluster ID
+ * @returns {Promise<Object>} Theme detail with constituents and metrics
+ */
+export const getThemeDetail = async (themeId) => {
+  const response = await apiClient.get(`/v1/themes/${themeId}`);
+  return response.data;
+};
+
+/**
+ * Get historical metrics for a theme.
+ *
+ * @param {number} themeId - Theme cluster ID
+ * @param {number} days - Days of history (default: 30)
+ * @returns {Promise<Object>} Theme history with metrics over time
+ */
+export const getThemeHistory = async (themeId, days = 30) => {
+  const response = await apiClient.get(`/v1/themes/${themeId}/history`, {
+    params: { days }
+  });
+  return response.data;
+};
+
+/**
+ * Get news mentions for a specific theme.
+ *
+ * @param {number} themeId - Theme cluster ID
+ * @param {number} limit - Maximum mentions to return (default: 50)
+ * @returns {Promise<Object>} Theme mentions with content details
+ */
+export const getThemeMentions = async (themeId, limit = 50) => {
+  const response = await apiClient.get(`/v1/themes/${themeId}/mentions`, {
+    params: { limit }
+  });
+  return response.data;
+};
+
+/**
+ * Discover correlation clusters (hidden themes).
+ *
+ * @param {number} correlationThreshold - Minimum correlation (default: 0.6)
+ * @param {number} minClusterSize - Minimum stocks per cluster (default: 3)
+ * @returns {Promise<Object>} Correlation discovery results
+ */
+export const discoverCorrelationClusters = async (correlationThreshold = 0.6, minClusterSize = 3) => {
+  const response = await apiClient.get('/v1/themes/correlation/clusters', {
+    params: {
+      correlation_threshold: correlationThreshold,
+      min_cluster_size: minClusterSize
+    }
+  });
+  return response.data;
+};
+
+/**
+ * Validate a theme by checking internal correlations.
+ *
+ * @param {number} themeId - Theme cluster ID
+ * @param {number} minCorrelation - Minimum correlation threshold (default: 0.5)
+ * @returns {Promise<Object>} Validation results
+ */
+export const validateTheme = async (themeId, minCorrelation = 0.5) => {
+  const response = await apiClient.get(`/v1/themes/${themeId}/validate`, {
+    params: { min_correlation: minCorrelation }
+  });
+  return response.data;
+};
+
+/**
+ * Find stocks that may be joining a theme.
+ *
+ * @param {number} themeId - Theme cluster ID
+ * @param {number} correlationThreshold - Minimum correlation (default: 0.6)
+ * @returns {Promise<Object>} Potential entrants
+ */
+export const findThemeEntrants = async (themeId, correlationThreshold = 0.6) => {
+  const response = await apiClient.get(`/v1/themes/${themeId}/entrants`, {
+    params: { correlation_threshold: correlationThreshold }
+  });
+  return response.data;
+};
+
+/**
+ * Get theme alerts.
+ *
+ * @param {boolean} unreadOnly - Only return unread alerts (default: false)
+ * @param {number} limit - Maximum alerts to return (default: 50)
+ * @returns {Promise<Object>} Alerts response
+ */
+export const getAlerts = async (unreadOnly = false, limit = 50) => {
+  const response = await apiClient.get('/v1/themes/alerts', {
+    params: { unread_only: unreadOnly, limit }
+  });
+  return response.data;
+};
+
+/**
+ * Mark an alert as read.
+ *
+ * @param {number} alertId - Alert ID
+ * @returns {Promise<Object>} Status response
+ */
+export const markAlertRead = async (alertId) => {
+  const response = await apiClient.post(`/v1/themes/alerts/${alertId}/read`);
+  return response.data;
+};
+
+/**
+ * Dismiss (soft delete) an alert.
+ *
+ * @param {number} alertId - Alert ID
+ * @returns {Promise<Object>} Status response
+ */
+export const dismissAlert = async (alertId) => {
+  const response = await apiClient.post(`/v1/themes/alerts/${alertId}/dismiss`);
+  return response.data;
+};
+
+/**
+ * List content sources.
+ *
+ * @param {boolean} activeOnly - Only return active sources (default: true)
+ * @param {string|null} pipeline - Filter by pipeline (optional)
+ * @returns {Promise<Array>} List of content sources
+ */
+export const getContentSources = async (activeOnly = true, pipeline = null) => {
+  const params = { active_only: activeOnly };
+  if (pipeline) params.pipeline = pipeline;
+  const response = await apiClient.get('/v1/themes/sources', { params });
+  return response.data;
+};
+
+/**
+ * Add a new content source.
+ *
+ * @param {Object} source - Source configuration
+ * @returns {Promise<Object>} Created source
+ */
+export const addContentSource = async (source) => {
+  const response = await apiClient.post('/v1/themes/sources', source);
+  return response.data;
+};
+
+/**
+ * Update an existing content source.
+ *
+ * @param {number} sourceId - Source ID
+ * @param {Object} updates - Fields to update
+ * @returns {Promise<Object>} Updated source
+ */
+export const updateContentSource = async (sourceId, updates) => {
+  const response = await apiClient.put(`/v1/themes/sources/${sourceId}`, updates);
+  return response.data;
+};
+
+/**
+ * Deactivate a content source.
+ *
+ * @param {number} sourceId - Source ID
+ * @returns {Promise<Object>} Status response
+ */
+export const deleteContentSource = async (sourceId) => {
+  const response = await apiClient.delete(`/v1/themes/sources/${sourceId}`);
+  return response.data;
+};
+
+/**
+ * Trigger content ingestion from all sources.
+ *
+ * @returns {Promise<Object>} Ingestion results
+ */
+export const runIngestion = async () => {
+  const response = await apiClient.post('/v1/themes/ingest');
+  return response.data;
+};
+
+/**
+ * Trigger theme extraction from unprocessed content.
+ *
+ * @param {number} limit - Max items to process (default: 50)
+ * @param {string} pipeline - Pipeline: technical or fundamental (default: 'technical')
+ * @returns {Promise<Object>} Extraction results
+ */
+export const runExtraction = async (limit = 50, pipeline = 'technical') => {
+  const response = await apiClient.post('/v1/themes/extract', null, {
+    params: { limit, pipeline }
+  });
+  return response.data;
+};
+
+/**
+ * Calculate/update metrics for all themes.
+ *
+ * @param {string} pipeline - Pipeline: technical or fundamental (default: 'technical')
+ * @returns {Promise<Object>} Calculation results
+ */
+export const calculateMetrics = async (pipeline = 'technical') => {
+  const response = await apiClient.post('/v1/themes/calculate-metrics', null, {
+    params: { pipeline }
+  });
+  return response.data;
+};
+
+/**
+ * Create a theme from selected stocks.
+ *
+ * @param {string} name - Theme name
+ * @param {Array<string>} symbols - Stock symbols
+ * @param {string|null} description - Optional description
+ * @returns {Promise<Object>} Created theme
+ */
+export const createTheme = async (name, symbols, description = null) => {
+  const response = await apiClient.post('/v1/themes/create-from-cluster', null, {
+    params: { name, symbols, description }
+  });
+  return response.data;
+};
+
+/**
+ * Add stocks to an existing theme.
+ *
+ * @param {number} themeId - Theme cluster ID
+ * @param {Array<string>} symbols - Stock symbols to add
+ * @returns {Promise<Object>} Result
+ */
+export const addThemeConstituents = async (themeId, symbols) => {
+  const response = await apiClient.post(`/v1/themes/${themeId}/add-constituents`, symbols);
+  return response.data;
+};
+
+// ==================== Async Pipeline (Celery-based) ====================
+
+/**
+ * Start the full theme discovery pipeline asynchronously.
+ *
+ * This queues a Celery task that runs:
+ * 1. Content ingestion from all active sources
+ * 2. Theme extraction via LLM
+ * 3. Metrics calculation for all themes
+ * 4. Alert generation
+ *
+ * @param {string|null} pipeline - Pipeline: technical, fundamental, or null for both
+ * @returns {Promise<Object>} Response with run_id and task_id for tracking
+ */
+export const runPipelineAsync = async (pipeline = null) => {
+  const params = {};
+  if (pipeline) params.pipeline = pipeline;
+  const response = await apiClient.post('/v1/themes/pipeline/run', null, { params });
+  return response.data;
+};
+
+/**
+ * Get status of a pipeline run.
+ *
+ * Poll this endpoint to track progress of an async pipeline run.
+ *
+ * @param {string} runId - Pipeline run ID from runPipelineAsync()
+ * @returns {Promise<Object>} Pipeline status with progress info
+ */
+export const getPipelineStatus = async (runId) => {
+  const response = await apiClient.get(`/v1/themes/pipeline/${runId}/status`);
+  return response.data;
+};
+
+/**
+ * List recent pipeline runs.
+ *
+ * @param {number} limit - Maximum runs to return (default: 10)
+ * @returns {Promise<Object>} List of recent pipeline runs
+ */
+export const listPipelineRuns = async (limit = 10) => {
+  const response = await apiClient.get('/v1/themes/pipeline/runs', {
+    params: { limit }
+  });
+  return response.data;
+};
+
+// ==================== Theme Merge Operations ====================
+
+/**
+ * Get merge suggestions with optional status filter.
+ *
+ * @param {string} status - Filter by status: pending, approved, rejected (default: 'pending')
+ * @param {number} limit - Maximum suggestions to return (default: 50)
+ * @returns {Promise<Object>} List of merge suggestions
+ */
+export const getMergeSuggestions = async (status = 'pending', limit = 50) => {
+  const response = await apiClient.get('/v1/themes/merge-suggestions', {
+    params: { status, limit }
+  });
+  return response.data;
+};
+
+/**
+ * Approve a merge suggestion (executes the merge).
+ *
+ * @param {number} suggestionId - Merge suggestion ID
+ * @returns {Promise<Object>} Result of the merge operation
+ */
+export const approveMergeSuggestion = async (suggestionId) => {
+  const response = await apiClient.post(`/v1/themes/merge-suggestions/${suggestionId}/approve`);
+  return response.data;
+};
+
+/**
+ * Reject a merge suggestion.
+ *
+ * @param {number} suggestionId - Merge suggestion ID
+ * @returns {Promise<Object>} Result of the rejection
+ */
+export const rejectMergeSuggestion = async (suggestionId) => {
+  const response = await apiClient.post(`/v1/themes/merge-suggestions/${suggestionId}/reject`);
+  return response.data;
+};
+
+/**
+ * Get merge history.
+ *
+ * @param {number} limit - Maximum history entries to return (default: 50)
+ * @returns {Promise<Object>} List of merge history entries
+ */
+export const getMergeHistory = async (limit = 50) => {
+  const response = await apiClient.get('/v1/themes/merge-history', {
+    params: { limit }
+  });
+  return response.data;
+};
+
+/**
+ * Run theme consolidation to find duplicate themes.
+ *
+ * This generates new merge suggestions by:
+ * 1. Updating embeddings for all themes
+ * 2. Finding similar pairs via cosine similarity
+ * 3. Verifying with LLM
+ *
+ * @param {boolean} dryRun - If true, only preview without executing (default: false)
+ * @returns {Promise<Object>} Task info with task_id for polling
+ */
+export const runThemeConsolidation = async (dryRun = false) => {
+  const response = await apiClient.post('/v1/themes/consolidate/async', null, {
+    params: { dry_run: dryRun }
+  });
+  return response.data;
+};
+
+// ==================== Content Item Browser ====================
+
+/**
+ * Get paginated list of content items with themes.
+ *
+ * @param {Object} params - Query parameters
+ * @param {string} params.search - Search in title, source_name, tickers
+ * @param {string} params.source_type - Filter by source type
+ * @param {string} params.sentiment - Filter by sentiment
+ * @param {string} params.date_from - From date (YYYY-MM-DD)
+ * @param {string} params.date_to - To date (YYYY-MM-DD)
+ * @param {number} params.limit - Items per page (default: 50)
+ * @param {number} params.offset - Pagination offset (default: 0)
+ * @param {string} params.sort_by - Sort column (default: published_at)
+ * @param {string} params.sort_order - Sort order: asc or desc (default: desc)
+ * @returns {Promise<Object>} Paginated content items with themes
+ */
+export const getContentItems = async (params = {}) => {
+  const response = await apiClient.get('/v1/themes/content', { params });
+  return response.data;
+};
+
+// ==================== LLM Configuration ====================
+
+/**
+ * Get current LLM configuration.
+ *
+ * @returns {Promise<Object>} LLM config with current models and Ollama status
+ */
+export const getLLMConfig = async () => {
+  const response = await apiClient.get('/v1/config/llm');
+  return response.data;
+};
+
+/**
+ * Update LLM model selection.
+ *
+ * @param {string} modelId - The model ID to use (e.g., "groq/llama-3.3-70b-versatile")
+ * @param {string} useCase - The use case: "extraction" or "merge"
+ * @returns {Promise<Object>} Updated configuration
+ */
+export const updateLLMModel = async (modelId, useCase = 'extraction') => {
+  const response = await apiClient.post('/v1/config/llm', {
+    model_id: modelId,
+    use_case: useCase,
+  });
+  return response.data;
+};
+
+/**
+ * Update Ollama API settings.
+ *
+ * @param {string} apiBase - Ollama API base URL
+ * @returns {Promise<Object>} Updated Ollama configuration
+ */
+export const updateOllamaSettings = async (apiBase) => {
+  const response = await apiClient.post('/v1/config/ollama', {
+    api_base: apiBase,
+  });
+  return response.data;
+};
+
+/**
+ * Get available Ollama models.
+ *
+ * @returns {Promise<Object>} List of installed Ollama models
+ */
+export const getOllamaModels = async () => {
+  const response = await apiClient.get('/v1/config/ollama/models');
+  return response.data;
+};

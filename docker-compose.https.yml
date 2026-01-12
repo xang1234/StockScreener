@@ -1,0 +1,56 @@
+# =============================================================================
+# Docker Compose HTTPS Override (Caddy with automatic Let's Encrypt)
+# =============================================================================
+# Adds Caddy reverse proxy for automatic HTTPS certificate management.
+# Use for standalone VPS deployment (Hostinger, DigitalOcean, etc.)
+#
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.https.yml up -d
+#
+# Prerequisites:
+#   1. DNS A record pointing your domain to server IP
+#   2. Ports 80 and 443 open in firewall
+#   3. .env.docker with DOMAIN set (e.g., DOMAIN=stocks.yourdomain.com)
+#
+# Caddy will automatically:
+#   - Obtain Let's Encrypt certificate
+#   - Renew certificate before expiry
+#   - Redirect HTTP to HTTPS
+#   - Handle TLS termination
+#
+# =============================================================================
+
+services:
+  # Caddy reverse proxy with automatic HTTPS
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    depends_on:
+      - frontend
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Override frontend to not expose ports (Caddy handles external traffic)
+  frontend:
+    ports: !reset []
+
+volumes:
+  caddy_data:
+  caddy_config:

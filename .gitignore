@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+backend/venv
+ENV/
+
+# Node modules
+frontend/node_modules
+
+# Build artifacts
+frontend/dist
+
+# Environment variables (keep .example files)
+.env
+.env.docker
+!.env.example
+!.env.docker.example
+
+# Data files
+*.csv
+*.xlsx
+*.xls
+*.parquet
+*.html
+*.db
+data/.cache/*
+
+# Logs
+*.log
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude
+.specstory
+
+# Temporary files
+*.tmp
+*.swp
+celerybeat-schedule
+
+# Playwright MCP
+.playwright-mcp/

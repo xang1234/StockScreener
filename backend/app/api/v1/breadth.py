@@ -1,0 +1,297 @@
+"""
+API endpoints for market breadth indicators.
+
+Provides access to current and historical breadth data,
+trend analysis, and manual calculation triggers.
+"""
+import logging
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from datetime import date, datetime, timedelta
+from typing import List, Optional
+
+from ...database import get_db
+from ...models.market_breadth import MarketBreadth
+from ...schemas.breadth import (
+    BreadthResponse,
+    TrendResponse,
+    TrendDataPoint,
+    CalculationRequest,
+    CalculationResponse,
+    BackfillRequest,
+    BackfillResponse,
+    BreadthSummary
+)
+from ...tasks.breadth_tasks import calculate_daily_breadth, backfill_breadth_data
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+@router.get("/current", response_model=BreadthResponse)
+async def get_current_breadth(db: Session = Depends(get_db)):
+    """
+    Get the most recent market breadth data.
+
+    Returns the latest breadth snapshot from the database.
+    """
+    breadth = db.query(MarketBreadth).order_by(
+        MarketBreadth.date.desc()
+    ).first()
+
+    if not breadth:
+        raise HTTPException(
+            status_code=404,
+            detail="No breadth data available. Run a calculation first."
+        )
+
+    return breadth
+
+
+@router.get("/historical", response_model=List[BreadthResponse])
+async def get_historical_breadth(
+    start_date: date = Query(..., description="Start date (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="End date (YYYY-MM-DD)"),
+    limit: int = Query(365, ge=1, le=730, description="Maximum number of records"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get historical breadth data for a date range.
+
+    Args:
+        start_date: Start of date range
+        end_date: End of date range
+        limit: Maximum number of records (default: 365, max: 365)
+
+    Returns:
+        List of breadth records for the specified date range
+    """
+    # Validate date range
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Start date ({start_date}) must be before end date ({end_date})"
+        )
+
+    # Limit range to 730 days (2 years)
+    max_range = timedelta(days=730)
+    if (end_date - start_date) > max_range:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Date range cannot exceed 730 days (2 years)"
+        )
+
+    # Query breadth data
+    breadth_records = db.query(MarketBreadth).filter(
+        MarketBreadth.date >= start_date,
+        MarketBreadth.date <= end_date
+    ).order_by(
+        MarketBreadth.date.desc()
+    ).limit(limit).all()
+
+    if not breadth_records:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No breadth data found for date range {start_date} to {end_date}"
+        )
+
+    return breadth_records
+
+
+@router.get("/trend/{indicator}", response_model=TrendResponse)
+async def get_indicator_trend(
+    indicator: str,
+    days: int = Query(30, ge=1, le=730, description="Number of days to retrieve"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get time series data for a specific breadth indicator.
+
+    Args:
+        indicator: Indicator name (e.g., 'stocks_up_4pct', 'ratio_5day')
+        days: Number of days to retrieve (default: 30, max: 365)
+
+    Returns:
+        Time series data for the specified indicator
+    """
+    # Validate indicator name
+    valid_indicators = [
+        'stocks_up_4pct', 'stocks_down_4pct',
+        'ratio_5day', 'ratio_10day',
+        'stocks_up_25pct_quarter', 'stocks_down_25pct_quarter',
+        'stocks_up_25pct_month', 'stocks_down_25pct_month',
+        'stocks_up_50pct_month', 'stocks_down_50pct_month',
+        'stocks_up_13pct_34days', 'stocks_down_13pct_34days',
+        'total_stocks_scanned'
+    ]
+
+    if indicator not in valid_indicators:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid indicator '{indicator}'. Must be one of: {', '.join(valid_indicators)}"
+        )
+
+    # Get recent breadth data
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=days)
+
+    breadth_records = db.query(MarketBreadth).filter(
+        MarketBreadth.date >= start_date,
+        MarketBreadth.date <= end_date
+    ).order_by(
+        MarketBreadth.date.asc()
+    ).all()
+
+    if not breadth_records:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No breadth data found for the last {days} days"
+        )
+
+    # Extract indicator values
+    data_points = []
+    for record in breadth_records:
+        value = getattr(record, indicator, None)
+        data_points.append(TrendDataPoint(
+            date=record.date.strftime('%Y-%m-%d'),
+            value=value
+        ))
+
+    return TrendResponse(
+        indicator=indicator,
+        data=data_points,
+        total_points=len(data_points)
+    )
+
+
+@router.post("/calculate", response_model=CalculationResponse)
+async def trigger_calculation(
+    request: CalculationRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Manually trigger a breadth calculation.
+
+    Can be used to calculate breadth for a specific date or today.
+    Runs as a background task.
+
+    Args:
+        request: Calculation request with optional date
+
+    Returns:
+        Status and task information
+    """
+    calculation_date = request.calculation_date
+
+    # Validate date format if provided
+    if calculation_date:
+        try:
+            datetime.strptime(calculation_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid date format '{calculation_date}'. Use YYYY-MM-DD"
+            )
+
+    # Trigger background task
+    background_tasks.add_task(calculate_daily_breadth, calculation_date)
+
+    date_str = calculation_date or "today"
+    return CalculationResponse(
+        status="started",
+        message=f"Breadth calculation triggered for {date_str}",
+        task_id=None  # Background tasks don't return task IDs
+    )
+
+
+@router.post("/backfill", response_model=BackfillResponse)
+async def trigger_backfill(
+    request: BackfillRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Trigger a historical backfill for a date range.
+
+    Calculates breadth for all trading days in the specified range.
+    Runs as a Celery task with progress tracking.
+
+    Args:
+        request: Backfill request with start and end dates
+
+    Returns:
+        Task information for tracking progress
+    """
+    # Validate date format
+    try:
+        start = datetime.strptime(request.start_date, "%Y-%m-%d").date()
+        end = datetime.strptime(request.end_date, "%Y-%m-%d").date()
+    except ValueError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid date format. Use YYYY-MM-DD: {str(e)}"
+        )
+
+    # Validate date range
+    if start > end:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Start date ({start}) must be before end date ({end})"
+        )
+
+    # Limit backfill to 2 years
+    max_range = timedelta(days=730)
+    if (end - start) > max_range:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Backfill range cannot exceed 2 years (730 days)"
+        )
+
+    # Estimate number of trading days (roughly 5/7 of calendar days)
+    total_days = (end - start).days + 1
+    estimated_trading_days = int(total_days * 5 / 7)
+
+    # Trigger Celery task
+    task = backfill_breadth_data.delay(request.start_date, request.end_date)
+
+    logger.info(f"Backfill task triggered: {task.id} for {request.start_date} to {request.end_date}")
+
+    return BackfillResponse(
+        status="started",
+        message=f"Backfill task started for {request.start_date} to {request.end_date}",
+        task_id=task.id,
+        dates_to_process=estimated_trading_days
+    )
+
+
+@router.get("/summary", response_model=BreadthSummary)
+async def get_breadth_summary(db: Session = Depends(get_db)):
+    """
+    Get summary statistics for available breadth data.
+
+    Returns information about the breadth data coverage,
+    including date ranges and record counts.
+    """
+    # Get total record count
+    total_records = db.query(func.count(MarketBreadth.id)).scalar() or 0
+
+    if total_records == 0:
+        return BreadthSummary(
+            latest_date=None,
+            total_records=0,
+            date_range_start=None,
+            date_range_end=None
+        )
+
+    # Get date range
+    min_date = db.query(func.min(MarketBreadth.date)).scalar()
+    max_date = db.query(func.max(MarketBreadth.date)).scalar()
+
+    return BreadthSummary(
+        latest_date=max_date,
+        total_records=total_records,
+        date_range_start=min_date,
+        date_range_end=max_date
+    )

@@ -1,0 +1,43 @@
+# =============================================================================
+# Caddy Configuration for Stock Scanner
+# =============================================================================
+# Automatic HTTPS with Let's Encrypt certificate management.
+#
+# The {$DOMAIN} variable is set via docker-compose environment.
+# For local testing, use: DOMAIN=localhost docker-compose ... up
+#
+# =============================================================================
+
+{$DOMAIN} {
+    # Reverse proxy to nginx frontend (which handles /api routing to backend)
+    reverse_proxy frontend:80
+
+    # Security headers (Caddy adds HSTS automatically for HTTPS)
+    header {
+        # Prevent clickjacking
+        X-Frame-Options "SAMEORIGIN"
+        # Prevent MIME sniffing
+        X-Content-Type-Options "nosniff"
+        # XSS protection (legacy, but still useful)
+        X-XSS-Protection "1; mode=block"
+        # Control referrer information
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # Remove server identification
+        -Server
+    }
+
+    # Logging
+    log {
+        output stdout
+        format json
+        level INFO
+    }
+
+    # Compression (Caddy enables gzip/zstd by default, but be explicit)
+    encode zstd gzip
+}
+
+# Health check endpoint (bypasses HTTPS for internal monitoring)
+:8080 {
+    respond /health "OK" 200
+}

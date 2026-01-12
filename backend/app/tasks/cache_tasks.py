@@ -1,0 +1,1011 @@
+"""
+Celery tasks for cache warming and maintenance.
+
+Provides background tasks for:
+- Daily cache warming after market close
+- Weekly full cache refresh
+- On-demand cache warming
+
+All data-fetching tasks use the @serialized_data_fetch decorator
+to ensure only one task fetches external data at a time.
+"""
+import logging
+from typing import List, Optional
+from datetime import datetime
+
+from ..celery_app import celery_app
+from ..database import SessionLocal
+from ..services.cache_manager import CacheManager
+from ..config import settings
+from ..utils.market_hours import is_market_open, format_market_status
+from .data_fetch_lock import serialized_data_fetch
+
+logger = logging.getLogger(__name__)
+
+
+@celery_app.task(name='app.tasks.cache_tasks.warm_spy_cache')
+def warm_spy_cache():
+    """
+    Warm SPY benchmark cache.
+
+    This task is typically run after market close to ensure
+    the next day's scans have fresh SPY data cached.
+
+    Returns:
+        Dict with task results
+    """
+    logger.info("=" * 60)
+    logger.info("TASK: Warming SPY Benchmark Cache")
+    logger.info(f"Market status: {format_market_status()}")
+    logger.info("=" * 60)
+
+    try:
+        cache_manager = CacheManager()
+
+        # Warm both 1y and 2y periods
+        results = {
+            '2y': cache_manager.warm_benchmark_cache(period="2y"),
+            '1y': cache_manager.warm_benchmark_cache(period="1y"),
+            'market_status': format_market_status(),
+            'timestamp': datetime.now().isoformat()
+        }
+
+        logger.info("✓ SPY cache warming task completed")
+        return results
+
+    except Exception as e:
+        logger.error(f"Error in warm_spy_cache task: {e}", exc_info=True)
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+
+@celery_app.task(name='app.tasks.cache_tasks.warm_top_symbols')
+def warm_top_symbols(symbols: Optional[List[str]] = None, count: Optional[int] = None):
+    """
+    Warm cache for symbols.
+
+    Args:
+        symbols: List of symbols to warm (optional, will use universe if None)
+        count: Number of symbols to warm (None = all active stocks)
+
+    Returns:
+        Dict with warming statistics
+    """
+    # If count is None, fetch ALL active stocks (no limit)
+    # If count is provided, limit to that many
+    fetch_all = (count is None)
+
+    logger.info("=" * 60)
+    if fetch_all:
+        logger.info(f"TASK: Warming ALL Active Symbols from Universe")
+    else:
+        logger.info(f"TASK: Warming Top {count} Symbols")
+    logger.info(f"Market status: {format_market_status()}")
+    logger.info("=" * 60)
+
+    db = SessionLocal()
+
+    try:
+        # If no symbols provided, get from universe
+        if symbols is None:
+            from ..models.stock_universe import StockUniverse
+
+            # Build query for active stocks
+            query = db.query(StockUniverse).filter(
+                StockUniverse.is_active == True
+            )
+
+            # Only apply limit if count is specified
+            if not fetch_all and count is not None:
+                query = query.limit(count)
+
+            universe_records = query.all()
+            symbols = [record.symbol for record in universe_records]
+
+            if not symbols:
+                # Fallback to S&P 500 top stocks
+                logger.warning("No active symbols found in universe, using fallback list")
+                symbols = [
+                    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA',
+                    'META', 'TSLA', 'BRK.B', 'V', 'JPM',
+                    'WMT', 'MA', 'JNJ', 'PG', 'XOM',
+                    'UNH', 'HD', 'CVX', 'ABBV', 'KO',
+                    'LLY', 'AVGO', 'MRK', 'PEP', 'COST',
+                ]
+                if not fetch_all and count is not None:
+                    symbols = symbols[:count]
+
+        logger.info(f"Warming {len(symbols)} symbols: {', '.join(symbols[:10])}...")
+
+        cache_manager = CacheManager(db)
+
+        # Warm all caches
+        results = cache_manager.warm_all_caches(symbols)
+
+        logger.info("✓ Symbol cache warming task completed")
+        return results
+
+    except Exception as e:
+        logger.error(f"Error in warm_top_symbols task: {e}", exc_info=True)
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name='app.tasks.cache_tasks.daily_cache_warmup')
+@serialized_data_fetch('daily_cache_warmup')
+def daily_cache_warmup(self):
+    """
+    Daily cache warmup task.
+
+    Runs after market close to prepare cache for next trading day.
+    Warms SPY + ALL active symbols in the universe.
+
+    Returns:
+        Dict with combined results
+    """
+    logger.info("=" * 80)
+    logger.info("TASK: Daily Cache Warmup")
+    logger.info(f"Market status: {format_market_status()}")
+    logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 80)
+
+    # Check if market is still open (task should run after close)
+    if is_market_open():
+        logger.warning("Market is still open - cache warmup may fetch incomplete data")
+
+    results = {
+        'spy': None,
+        'symbols': None,
+        'started_at': datetime.now().isoformat()
+    }
+
+    try:
+        # 1. Warm SPY benchmark cache
+        logger.info("\n[1/2] Warming SPY benchmark cache...")
+        results['spy'] = warm_spy_cache()
+
+        # 2. Warm ALL active symbols from universe
+        logger.info(f"\n[2/2] Warming ALL active symbols from universe...")
+        results['symbols'] = warm_top_symbols(count=None)  # None = fetch all active stocks
+
+        results['completed_at'] = datetime.now().isoformat()
+
+        logger.info("=" * 80)
+        logger.info("✓ Daily cache warmup completed successfully")
+        logger.info("=" * 80)
+
+        return results
+
+    except Exception as e:
+        logger.error(f"Error in daily_cache_warmup task: {e}", exc_info=True)
+        results['error'] = str(e)
+        results['completed_at'] = datetime.now().isoformat()
+        return results
+
+
+@celery_app.task(bind=True, name='app.tasks.cache_tasks.weekly_full_refresh')
+@serialized_data_fetch('weekly_full_refresh')
+def weekly_full_refresh(self):
+    """
+    Weekly full cache refresh.
+
+    Clears all caches and re-fetches fresh data to ensure consistency.
+    Typically runs Sunday morning before markets open.
+
+    Returns:
+        Dict with refresh results
+    """
+    logger.info("=" * 80)
+    logger.info("TASK: Weekly Full Cache Refresh")
+    logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 80)
+
+    db = SessionLocal()
+
+    try:
+        cache_manager = CacheManager(db)
+
+        # 1. Invalidate all Redis caches
+        logger.info("\n[1/3] Invalidating all caches...")
+        invalidate_results = cache_manager.invalidate_all_caches()
+        logger.info(f"✓ Invalidated {invalidate_results['deleted']} cache keys")
+
+        # 2. Warm SPY cache
+        logger.info("\n[2/3] Re-warming SPY benchmark cache...")
+        spy_results = warm_spy_cache()
+
+        # 3. Warm top symbols
+        logger.info(f"\n[3/3] Re-warming top {settings.cache_warmup_symbols} symbols...")
+        symbol_results = warm_top_symbols(count=settings.cache_warmup_symbols)
+
+        results = {
+            'invalidated': invalidate_results,
+            'spy': spy_results,
+            'symbols': symbol_results,
+            'completed_at': datetime.now().isoformat()
+        }
+
+        logger.info("=" * 80)
+        logger.info("✓ Weekly full refresh completed successfully")
+        logger.info("=" * 80)
+
+        return results
+
+    except Exception as e:
+        logger.error(f"Error in weekly_full_refresh task: {e}", exc_info=True)
+        return {
+            'error': str(e),
+            'completed_at': datetime.now().isoformat()
+        }
+
+    finally:
+        db.close()
+
+
+@celery_app.task(name='app.tasks.cache_tasks.invalidate_cache')
+def invalidate_cache(symbol: Optional[str] = None):
+    """
+    Invalidate cache for a specific symbol or all caches.
+
+    Args:
+        symbol: Symbol to invalidate (None = invalidate all)
+
+    Returns:
+        Dict with invalidation results
+    """
+    logger.info(f"TASK: Invalidate cache for {symbol if symbol else 'ALL'}")
+
+    try:
+        cache_manager = CacheManager()
+
+        if symbol:
+            success = cache_manager.invalidate_symbol_cache(symbol)
+            return {
+                'symbol': symbol,
+                'success': success,
+                'timestamp': datetime.now().isoformat()
+            }
+        else:
+            results = cache_manager.invalidate_all_caches()
+            results['timestamp'] = datetime.now().isoformat()
+            return results
+
+    except Exception as e:
+        logger.error(f"Error in invalidate_cache task: {e}", exc_info=True)
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+
+@celery_app.task(name='app.tasks.cache_tasks.get_cache_stats')
+def get_cache_stats():
+    """
+    Get comprehensive cache statistics.
+
+    Returns:
+        Dict with cache statistics
+    """
+    try:
+        cache_manager = CacheManager()
+        stats = cache_manager.get_cache_stats()
+        stats['timestamp'] = datetime.now().isoformat()
+        return stats
+
+    except Exception as e:
+        logger.error(f"Error in get_cache_stats task: {e}", exc_info=True)
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+
+@celery_app.task(name='app.tasks.cache_tasks.prewarm_scan_cache', bind=True)
+@serialized_data_fetch('prewarm_scan_cache')
+def prewarm_scan_cache(self, symbol_list: List[str], priority: str = 'normal'):
+    """
+    Pre-warm cache for upcoming scan.
+
+    Fetches data in background at controlled rate, so cache is ready
+    before scan starts. This allows scans to run from cache without
+    hitting API rate limits.
+
+    Args:
+        symbol_list: List of symbols to warm
+        priority: Priority level ('low', 'normal', 'high')
+
+    Returns:
+        Dict with warming statistics
+    """
+    total = len(symbol_list)
+
+    logger.info("=" * 80)
+    logger.info(f"TASK: Pre-warming Cache for Scan ({total} symbols)")
+    logger.info(f"Priority: {priority}")
+    logger.info(f"Market status: {format_market_status()}")
+    logger.info("=" * 80)
+
+    db = SessionLocal()
+    warmed = 0
+    failed = 0
+    cached = 0
+
+    try:
+        cache_manager = CacheManager(db)
+
+        # Process in chunks for progress tracking
+        chunk_size = 50
+        chunks = [symbol_list[i:i + chunk_size] for i in range(0, total, chunk_size)]
+
+        for chunk_num, chunk in enumerate(chunks, 1):
+            chunk_start = datetime.now()
+
+            # Warm this chunk
+            result = cache_manager.warm_all_caches(chunk)
+
+            # Update counters
+            warmed += result.get('warmed', 0)
+            failed += result.get('failed', 0)
+            cached += result.get('already_cached', 0)
+
+            # Calculate progress
+            completed = min(chunk_num * chunk_size, total)
+            progress = (completed / total) * 100
+
+            # Update Celery task state for progress tracking
+            self.update_state(
+                state='PROGRESS',
+                meta={
+                    'current': completed,
+                    'total': total,
+                    'percent': progress,
+                    'warmed': warmed,
+                    'failed': failed,
+                    'cached': cached
+                }
+            )
+
+            # Progress logging
+            elapsed = (datetime.now() - chunk_start).total_seconds()
+            logger.info(
+                f"Chunk {chunk_num}/{len(chunks)}: {len(chunk)} symbols "
+                f"in {elapsed:.1f}s | Progress: {completed}/{total} ({progress:.1f}%)"
+            )
+
+        logger.info("=" * 80)
+        logger.info(f"✓ Cache pre-warming completed:")
+        logger.info(f"  Warmed: {warmed}, Failed: {failed}, Already Cached: {cached}")
+        logger.info("=" * 80)
+
+        return {
+            'warmed': warmed,
+            'failed': failed,
+            'already_cached': cached,
+            'total': total,
+            'completed_at': datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error in prewarm_scan_cache task: {e}", exc_info=True)
+        return {
+            'error': str(e),
+            'warmed': warmed,
+            'failed': failed,
+            'total': total,
+            'timestamp': datetime.now().isoformat()
+        }
+
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name='app.tasks.cache_tasks.prewarm_all_active_symbols')
+@serialized_data_fetch('prewarm_all_active_symbols')
+def prewarm_all_active_symbols(self):
+    """
+    Warm cache for all active symbols after market close.
+
+    Runs at 5:30 PM ET daily, takes ~2-3 hours for 5000 stocks.
+    Next day's scans will be instant (served from cache).
+
+    This is the nightly cache warming job that ensures all active
+    symbols have fresh data cached for the next trading day.
+
+    Returns:
+        Dict with warming statistics
+    """
+    logger.info("=" * 80)
+    logger.info("TASK: Pre-warming All Active Symbols (Nightly Job)")
+    logger.info(f"Market status: {format_market_status()}")
+    logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 80)
+
+    db = SessionLocal()
+
+    try:
+        # Get all active symbols from stock universe
+        from ..models.stock_universe import StockUniverse
+
+        universe_records = db.query(StockUniverse).filter(
+            StockUniverse.is_active == True
+        ).all()
+
+        symbols = [record.symbol for record in universe_records]
+
+        logger.info(f"Found {len(symbols)} active symbols to warm")
+
+        if not symbols:
+            logger.warning("No active symbols found in stock universe")
+            return {
+                'warmed': 0,
+                'symbols_found': 0,
+                'timestamp': datetime.now().isoformat()
+            }
+
+        # Use prewarm_scan_cache task to do the actual warming
+        result = prewarm_scan_cache(symbols, priority='low')
+
+        logger.info("=" * 80)
+        logger.info("✓ Nightly cache warming completed")
+        logger.info(f"  Total symbols: {len(symbols)}")
+        logger.info(f"  Warmed: {result.get('warmed', 0)}")
+        logger.info(f"  Failed: {result.get('failed', 0)}")
+        logger.info("=" * 80)
+
+        return {
+            **result,
+            'symbols_found': len(symbols),
+            'job_type': 'nightly_warmup',
+            'completed_at': datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error in prewarm_all_active_symbols task: {e}", exc_info=True)
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+    finally:
+        db.close()
+
+
+def _fetch_with_backoff(bulk_fetcher, symbols: List[str], period: str = "2y", max_retries: int = 3):
+    """
+    Fetch batch data with exponential backoff on rate limit errors.
+
+    yfinance can return 429 errors or rate limit blocks. This function
+    retries with exponential backoff (60s, 120s, 240s) before giving up.
+
+    Args:
+        bulk_fetcher: BulkDataFetcher instance
+        symbols: List of symbols to fetch
+        period: Data period (default "2y")
+        max_retries: Maximum retry attempts (default 3)
+
+    Returns:
+        Dict of symbol -> data, or empty dict if all retries fail
+    """
+    import time
+    base_delay = 60  # Start with 60 second wait
+
+    for attempt in range(max_retries):
+        try:
+            return bulk_fetcher.fetch_batch_data(
+                symbols,
+                period=period,
+                include_fundamentals=False  # Price data only for speed
+            )
+        except Exception as e:
+            error_str = str(e).lower()
+            # Check for rate limit indicators
+            if "rate" in error_str or "429" in error_str or "too many" in error_str or "limit" in error_str:
+                if attempt < max_retries - 1:
+                    wait_time = base_delay * (2 ** attempt)  # 60, 120, 240 seconds
+                    logger.warning(
+                        f"Rate limited by yfinance. Waiting {wait_time}s before retry "
+                        f"(attempt {attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(wait_time)
+                else:
+                    logger.error(
+                        f"Rate limit persists after {max_retries} retries. "
+                        f"Skipping batch of {len(symbols)} symbols."
+                    )
+                    return {}
+            else:
+                # Re-raise non-rate-limit errors
+                raise
+    return {}
+
+
+@celery_app.task(bind=True, name='app.tasks.cache_tasks.force_refresh_stale_intraday')
+@serialized_data_fetch('force_refresh_stale_intraday')
+def force_refresh_stale_intraday(self, symbols: Optional[List[str]] = None):
+    """
+    Force refresh symbols with stale intraday data.
+
+    This task refreshes price data for symbols that were fetched during
+    market hours and are now stale (market has closed). The "today" bar
+    that was incomplete during market hours is replaced with actual
+    closing data.
+
+    Uses yfinance.Tickers() for efficient batch fetching.
+
+    Args:
+        symbols: List of symbols to refresh. If None, auto-detects
+                 all symbols with stale intraday data.
+
+    Returns:
+        Dict with refresh statistics
+    """
+    import time
+    from ..services.price_cache_service import PriceCacheService
+    from ..services.bulk_data_fetcher import BulkDataFetcher
+
+    logger.info("=" * 80)
+    logger.info("TASK: Force Refresh Stale Intraday Data (Batch Mode)")
+    logger.info(f"Market status: {format_market_status()}")
+    logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 80)
+
+    price_cache = PriceCacheService.get_instance()
+    bulk_fetcher = BulkDataFetcher()
+
+    try:
+        # Get symbols to refresh
+        if symbols is None:
+            symbols = price_cache.get_stale_intraday_symbols()
+            logger.info(f"Auto-detected {len(symbols)} symbols with stale intraday data")
+        else:
+            logger.info(f"Refreshing {len(symbols)} specified symbols")
+
+        if not symbols:
+            logger.info("No symbols to refresh - all data is fresh")
+            return {
+                'refreshed': 0,
+                'failed': 0,
+                'symbols': [],
+                'message': 'No stale intraday data detected',
+                'completed_at': datetime.now().isoformat()
+            }
+
+        total = len(symbols)
+        refreshed = 0
+        failed = 0
+        failed_symbols = []
+
+        # Process symbols in batches using yfinance.Tickers()
+        batch_size = 100  # Reduced from 200 to avoid rate limiting
+        rate_limit_delay = 2.0  # seconds between batches (increased for rate limit safety)
+
+        for batch_start in range(0, total, batch_size):
+            batch_symbols = symbols[batch_start:batch_start + batch_size]
+            batch_num = (batch_start // batch_size) + 1
+            total_batches = (total + batch_size - 1) // batch_size
+
+            logger.info(f"Batch {batch_num}/{total_batches}: Fetching {len(batch_symbols)} symbols using yfinance.Tickers()")
+
+            try:
+                # Batch fetch using yfinance.Tickers() with rate limit backoff
+                batch_results = _fetch_with_backoff(bulk_fetcher, batch_symbols, period="2y")
+
+                # Process results and store in cache
+                for symbol, data in batch_results.items():
+                    if not data.get('has_error') and data.get('price_data') is not None:
+                        price_df = data['price_data']
+                        if not price_df.empty:
+                            # Store in cache (Redis + DB)
+                            price_cache.store_in_cache(symbol, price_df, also_store_db=True)
+                            refreshed += 1
+                            logger.debug(f"✓ {symbol}: {len(price_df)} rows refreshed")
+                        else:
+                            failed += 1
+                            failed_symbols.append(symbol)
+                            logger.warning(f"✗ {symbol}: Empty data returned")
+                    else:
+                        failed += 1
+                        failed_symbols.append(symbol)
+                        error_msg = data.get('error', 'Unknown error')
+                        logger.warning(f"✗ {symbol}: {error_msg}")
+
+            except Exception as e:
+                logger.error(f"Batch {batch_num} error: {e}")
+                failed += len(batch_symbols)
+                failed_symbols.extend(batch_symbols)
+
+            # Update task state for progress tracking
+            progress = min((batch_start + batch_size), total)
+            self.update_state(
+                state='PROGRESS',
+                meta={
+                    'current': progress,
+                    'total': total,
+                    'percent': (progress / total) * 100,
+                    'refreshed': refreshed,
+                    'failed': failed
+                }
+            )
+
+            # Rate limit between batches
+            if batch_start + batch_size < total:
+                time.sleep(rate_limit_delay)
+
+        logger.info("=" * 80)
+        logger.info(f"✓ Force refresh completed:")
+        logger.info(f"  Refreshed: {refreshed}")
+        logger.info(f"  Failed: {failed}")
+        if failed_symbols:
+            logger.info(f"  Failed symbols: {failed_symbols[:10]}...")
+        logger.info("=" * 80)
+
+        return {
+            'refreshed': refreshed,
+            'failed': failed,
+            'total': total,
+            'failed_symbols': failed_symbols[:20],  # Limit to 20 for response size
+            'completed_at': datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error in force_refresh_stale_intraday task: {e}", exc_info=True)
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+
+@celery_app.task(bind=True, name='app.tasks.cache_tasks.auto_refresh_after_close')
+@serialized_data_fetch('auto_refresh_after_close')
+def auto_refresh_after_close(self):
+    """
+    Automatic post-close refresh of stale intraday data.
+
+    Scheduled to run at 4:45 PM ET daily (after market close).
+    Detects and refreshes any symbols with stale intraday data.
+
+    This ensures that any data fetched during market hours is
+    automatically updated with actual closing prices.
+
+    Returns:
+        Dict with refresh statistics
+    """
+    logger.info("=" * 80)
+    logger.info("TASK: Auto Refresh After Market Close")
+    logger.info(f"Market status: {format_market_status()}")
+    logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 80)
+
+    # Check if market is still open (shouldn't be, but safety check)
+    if is_market_open():
+        logger.warning("Market is still open - skipping auto refresh")
+        return {
+            'skipped': True,
+            'reason': 'Market still open',
+            'timestamp': datetime.now().isoformat()
+        }
+
+    # Delegate to force_refresh_stale_intraday
+    result = force_refresh_stale_intraday(symbols=None)
+
+    result['job_type'] = 'auto_refresh_after_close'
+    return result
+
+
+@celery_app.task(bind=True, name='app.tasks.cache_tasks.cleanup_old_price_data')
+def cleanup_old_price_data(self, keep_years: int = 5):
+    """
+    Clean up price data older than the specified retention period.
+
+    This task removes historical price data that is no longer needed,
+    preventing unbounded database growth. For stock scanning, typically
+    only 1-2 years of data is needed, but we default to keeping 5 years
+    for analysis purposes.
+
+    Args:
+        keep_years: Number of years of price data to retain (default: 5)
+
+    Returns:
+        Dict with cleanup statistics
+    """
+    from datetime import date, timedelta
+    from ..models.stock import StockPrice
+    from sqlalchemy import func
+
+    logger.info("=" * 80)
+    logger.info(f"TASK: Cleanup Old Price Data (keeping {keep_years} years)")
+    logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 80)
+
+    db = SessionLocal()
+
+    try:
+        # Calculate cutoff date
+        cutoff_date = date.today() - timedelta(days=keep_years * 365)
+
+        logger.info(f"Cutoff date: {cutoff_date}")
+
+        # Get count of records to delete
+        delete_count = db.query(func.count(StockPrice.id)).filter(
+            StockPrice.date < cutoff_date
+        ).scalar() or 0
+
+        if delete_count == 0:
+            logger.info("No old price data to delete")
+            return {
+                'deleted_rows': 0,
+                'cutoff_date': str(cutoff_date),
+                'message': 'No data older than cutoff date',
+                'completed_at': datetime.now().isoformat()
+            }
+
+        logger.info(f"Found {delete_count} rows older than {cutoff_date}")
+
+        # Delete in batches to avoid locking
+        batch_size = 10000
+        total_deleted = 0
+
+        while True:
+            # Delete a batch
+            deleted = db.query(StockPrice).filter(
+                StockPrice.date < cutoff_date
+            ).limit(batch_size).delete(synchronize_session=False)
+
+            if deleted == 0:
+                break
+
+            total_deleted += deleted
+            db.commit()
+
+            # Update progress
+            progress = (total_deleted / delete_count) * 100 if delete_count > 0 else 100
+            self.update_state(
+                state='PROGRESS',
+                meta={
+                    'deleted': total_deleted,
+                    'total': delete_count,
+                    'percent': progress
+                }
+            )
+
+            logger.info(f"Deleted batch: {deleted} rows (total: {total_deleted}/{delete_count})")
+
+        logger.info("=" * 80)
+        logger.info(f"✓ Price data cleanup completed:")
+        logger.info(f"  Deleted: {total_deleted} rows")
+        logger.info(f"  Cutoff date: {cutoff_date}")
+        logger.info("=" * 80)
+
+        return {
+            'deleted_rows': total_deleted,
+            'cutoff_date': str(cutoff_date),
+            'keep_years': keep_years,
+            'completed_at': datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error in cleanup_old_price_data task: {e}", exc_info=True)
+        db.rollback()
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name='app.tasks.cache_tasks.prewarm_chart_cache_for_scan')
+def prewarm_chart_cache_for_scan(self, scan_id: str, top_n: int = 50):
+    """
+    Pre-warm chart cache for top results after a scan completes.
+
+    This task is triggered after a scan completes to warm the price
+    cache for the top N results, so charts load instantly when
+    users view the scan results.
+
+    Args:
+        scan_id: UUID of completed scan
+        top_n: Number of top results to warm (default: 50)
+
+    Returns:
+        Dict with warming statistics
+    """
+    from ..models.scan_result import ScanResult
+    from ..services.price_cache_service import PriceCacheService
+
+    logger.info("=" * 80)
+    logger.info(f"TASK: Pre-warming Chart Cache for Scan {scan_id}")
+    logger.info(f"Top {top_n} results will be warmed")
+    logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 80)
+
+    db = SessionLocal()
+
+    try:
+        # Get top N results ordered by composite score
+        top_results = db.query(ScanResult.symbol).filter(
+            ScanResult.scan_id == scan_id
+        ).order_by(
+            ScanResult.composite_score.desc()
+        ).limit(top_n).all()
+
+        symbols = [r.symbol for r in top_results]
+
+        if not symbols:
+            logger.warning(f"No results found for scan {scan_id}")
+            return {
+                'scan_id': scan_id,
+                'warmed': 0,
+                'message': 'No scan results found',
+                'completed_at': datetime.now().isoformat()
+            }
+
+        logger.info(f"Warming chart cache for {len(symbols)} symbols: {symbols[:5]}...")
+
+        # Use PriceCacheService to warm the cache
+        price_cache = PriceCacheService.get_instance()
+        warmed = 0
+        failed = 0
+        already_cached = 0
+
+        # Process symbols with rate limiting to avoid overwhelming yfinance
+        for i, symbol in enumerate(symbols):
+            try:
+                # Check if already cached
+                cache_stats = price_cache.get_cache_stats(symbol)
+                if cache_stats.get('redis_cached'):
+                    already_cached += 1
+                    logger.debug(f"✓ {symbol}: Already cached")
+                    continue
+
+                # Fetch and cache (6mo period for charts)
+                data = price_cache.get_price_data(symbol, period='6mo')
+                if data is not None and not data.empty:
+                    warmed += 1
+                    logger.debug(f"✓ {symbol}: Warmed ({len(data)} rows)")
+                else:
+                    failed += 1
+                    logger.warning(f"✗ {symbol}: No data returned")
+
+            except Exception as e:
+                failed += 1
+                logger.warning(f"✗ {symbol}: Error - {e}")
+
+            # Update progress
+            progress = ((i + 1) / len(symbols)) * 100
+            self.update_state(
+                state='PROGRESS',
+                meta={
+                    'current': i + 1,
+                    'total': len(symbols),
+                    'percent': progress,
+                    'warmed': warmed,
+                    'failed': failed,
+                    'already_cached': already_cached
+                }
+            )
+
+        logger.info("=" * 80)
+        logger.info(f"✓ Chart cache warming completed for scan {scan_id}")
+        logger.info(f"  Warmed: {warmed}, Already Cached: {already_cached}, Failed: {failed}")
+        logger.info("=" * 80)
+
+        return {
+            'scan_id': scan_id,
+            'warmed': warmed,
+            'failed': failed,
+            'already_cached': already_cached,
+            'total': len(symbols),
+            'completed_at': datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error in prewarm_chart_cache_for_scan task: {e}", exc_info=True)
+        return {
+            'scan_id': scan_id,
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, name='app.tasks.cache_tasks.cleanup_orphaned_scans')
+def cleanup_orphaned_scans(self):
+    """
+    Clean up orphaned scan data across all universes.
+
+    This task cleans up:
+    1. All cancelled scans and their results (no value)
+    2. All stale running/queued scans older than 1 hour (will never complete)
+
+    Should be run periodically to prevent scan data buildup.
+
+    Returns:
+        Dict with cleanup statistics
+    """
+    from datetime import timedelta
+    from ..models.scan_result import Scan, ScanResult
+    from sqlalchemy import func
+
+    logger.info("=" * 80)
+    logger.info("TASK: Cleanup Orphaned Scans")
+    logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 80)
+
+    db = SessionLocal()
+
+    try:
+        total_deleted_scans = 0
+        total_deleted_results = 0
+
+        # 1. Delete all cancelled scans
+        logger.info("[1/2] Deleting cancelled scans...")
+        cancelled_scan_ids = [s.scan_id for s in db.query(Scan).filter(Scan.status == "cancelled").all()]
+        if cancelled_scan_ids:
+            cancelled_results = db.query(ScanResult).filter(
+                ScanResult.scan_id.in_(cancelled_scan_ids)
+            ).delete(synchronize_session=False)
+            cancelled_scans = db.query(Scan).filter(Scan.status == "cancelled").delete(synchronize_session=False)
+            total_deleted_scans += cancelled_scans
+            total_deleted_results += cancelled_results
+            logger.info(f"  Deleted {cancelled_scans} cancelled scans, {cancelled_results} results")
+        else:
+            logger.info("  No cancelled scans found")
+
+        # 2. Delete stale running/queued scans (older than 1 hour)
+        logger.info("[2/2] Deleting stale running/queued scans...")
+        stale_cutoff = datetime.utcnow() - timedelta(hours=1)
+        stale_scan_ids = [
+            s.scan_id for s in db.query(Scan).filter(
+                Scan.status.in_(["running", "queued"]),
+                Scan.started_at < stale_cutoff
+            ).all()
+        ]
+        if stale_scan_ids:
+            stale_results = db.query(ScanResult).filter(
+                ScanResult.scan_id.in_(stale_scan_ids)
+            ).delete(synchronize_session=False)
+            stale_scans = db.query(Scan).filter(
+                Scan.status.in_(["running", "queued"]),
+                Scan.started_at < stale_cutoff
+            ).delete(synchronize_session=False)
+            total_deleted_scans += stale_scans
+            total_deleted_results += stale_results
+            logger.info(f"  Deleted {stale_scans} stale scans, {stale_results} results")
+        else:
+            logger.info("  No stale running/queued scans found")
+
+        db.commit()
+
+        logger.info("=" * 80)
+        logger.info(f"✓ Orphaned scan cleanup completed:")
+        logger.info(f"  Deleted scans: {total_deleted_scans}")
+        logger.info(f"  Deleted results: {total_deleted_results}")
+        logger.info("=" * 80)
+
+        return {
+            'deleted_scans': total_deleted_scans,
+            'deleted_results': total_deleted_results,
+            'completed_at': datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error in cleanup_orphaned_scans task: {e}", exc_info=True)
+        db.rollback()
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+    finally:
+        db.close()

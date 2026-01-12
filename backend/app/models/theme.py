@@ -1,0 +1,383 @@
+"""Theme discovery models for tracking market themes from unstructured sources"""
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Text, Boolean, Index, UniqueConstraint, JSON
+from sqlalchemy.sql import func
+from ..database import Base
+
+
+class ContentSource(Base):
+    """Configured content sources for theme extraction (Substack, Twitter, News)"""
+
+    __tablename__ = "content_sources"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Source identification
+    name = Column(String(100), nullable=False)  # e.g., "Pelham Smithers", "@Jesse_Livermore"
+    source_type = Column(String(20), nullable=False, index=True)  # substack, twitter, news, reddit
+    url = Column(String(500))  # RSS feed URL, Twitter handle, etc.
+
+    # Configuration
+    is_active = Column(Boolean, default=True)
+    priority = Column(Integer, default=50)  # 1-100, higher = more weight
+    fetch_interval_minutes = Column(Integer, default=60)  # How often to check
+
+    # Pipeline assignment - which pipelines this source feeds into
+    # JSON array: ["technical", "fundamental"] or ["technical"] or ["fundamental"]
+    pipelines = Column(JSON, default=["technical", "fundamental"])
+
+    # Stats
+    last_fetched_at = Column(DateTime(timezone=True))
+    total_items_fetched = Column(Integer, default=0)
+
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("source_type", "url", name="uix_source_type_url"),
+    )
+
+
+class ContentItem(Base):
+    """Raw content items fetched from sources (before LLM extraction)"""
+
+    __tablename__ = "content_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Source reference
+    source_id = Column(Integer, index=True)  # FK to content_sources
+    source_type = Column(String(20), nullable=False, index=True)
+    source_name = Column(String(100))
+
+    # Content
+    external_id = Column(String(200))  # Original ID from source (for dedup)
+    title = Column(String(500))
+    content = Column(Text)  # Full text content
+    url = Column(String(500))
+    author = Column(String(100))
+
+    # Timestamps
+    published_at = Column(DateTime(timezone=True), index=True)
+    fetched_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Processing status
+    is_processed = Column(Boolean, default=False, index=True)
+    processed_at = Column(DateTime(timezone=True))
+    extraction_error = Column(Text)  # If extraction failed
+
+    __table_args__ = (
+        UniqueConstraint("source_type", "external_id", name="uix_source_external_id"),
+        Index("idx_content_unprocessed", "is_processed", "published_at"),
+    )
+
+
+class ThemeMention(Base):
+    """Individual theme mentions extracted from content via LLM"""
+
+    __tablename__ = "theme_mentions"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Source reference
+    content_item_id = Column(Integer, index=True)  # FK to content_items
+    source_type = Column(String(20), nullable=False, index=True)
+    source_name = Column(String(100))
+
+    # Extracted theme
+    raw_theme = Column(String(200), nullable=False)  # Original theme text from LLM
+    canonical_theme = Column(String(200), index=True)  # Normalized theme name
+    theme_cluster_id = Column(Integer, index=True)  # FK to theme_clusters (assigned after clustering)
+
+    # Pipeline assignment - which pipeline extracted this mention
+    pipeline = Column(String(20), index=True)  # technical or fundamental
+
+    # Extracted tickers
+    tickers = Column(JSON)  # List of tickers: ["NVDA", "AVGO", "MRVL"]
+    ticker_count = Column(Integer, default=0)
+
+    # Sentiment & confidence
+    sentiment = Column(String(20))  # bullish, bearish, neutral
+    confidence = Column(Float)  # 0-1, LLM's confidence in extraction
+
+    # Context
+    excerpt = Column(Text)  # Relevant excerpt from source
+
+    # Timestamps
+    mentioned_at = Column(DateTime(timezone=True), index=True)  # When content was published
+    extracted_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_theme_mention_date", "canonical_theme", "mentioned_at"),
+        Index("idx_mention_cluster", "theme_cluster_id", "mentioned_at"),
+        Index("idx_theme_mentions_pipeline", "pipeline"),
+    )
+
+
+class ThemeCluster(Base):
+    """Discovered theme clusters (groups of similar themes)"""
+
+    __tablename__ = "theme_clusters"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Cluster identity
+    name = Column(String(200), nullable=False, unique=True, index=True)  # Canonical name
+    aliases = Column(JSON)  # List of alternative names that map to this cluster
+    description = Column(Text)  # Auto-generated or manual description
+
+    # Pipeline assignment - which pipeline this theme belongs to
+    pipeline = Column(String(20), default="technical", index=True)  # technical or fundamental
+
+    # Theme categorization
+    category = Column(String(50), index=True)  # technology, healthcare, macro, sector, etc.
+    is_emerging = Column(Boolean, default=True)  # New/emerging vs established
+
+    # Discovery tracking
+    first_seen_at = Column(DateTime(timezone=True))
+    last_seen_at = Column(DateTime(timezone=True))
+    discovery_source = Column(String(20))  # llm_extraction, correlation_clustering, manual
+
+    # Status
+    is_active = Column(Boolean, default=True, index=True)  # Still being tracked
+    is_validated = Column(Boolean, default=False)  # Validated by price correlation
+
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ThemeConstituent(Base):
+    """Stocks that belong to a theme (ticker-to-theme mapping)"""
+
+    __tablename__ = "theme_constituents"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    theme_cluster_id = Column(Integer, nullable=False, index=True)  # FK to theme_clusters
+    symbol = Column(String(10), nullable=False, index=True)
+
+    # How this stock was added to theme
+    source = Column(String(20))  # llm_extraction, correlation, manual
+    confidence = Column(Float, default=0.5)  # 0-1, confidence this stock belongs to theme
+
+    # Mention tracking
+    mention_count = Column(Integer, default=1)  # How many times mentioned with theme
+    first_mentioned_at = Column(DateTime(timezone=True))
+    last_mentioned_at = Column(DateTime(timezone=True))
+
+    # Correlation validation
+    correlation_to_theme = Column(Float)  # Rolling correlation to theme basket
+    correlation_updated_at = Column(DateTime(timezone=True))
+
+    # Status
+    is_active = Column(Boolean, default=True)  # Still part of theme
+
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("theme_cluster_id", "symbol", name="uix_theme_symbol"),
+        Index("idx_theme_constituents", "theme_cluster_id", "symbol"),
+    )
+
+
+class ThemeMetrics(Base):
+    """Daily metrics for each theme (for ranking and tracking)"""
+
+    __tablename__ = "theme_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    theme_cluster_id = Column(Integer, nullable=False, index=True)  # FK to theme_clusters
+    date = Column(Date, nullable=False, index=True)
+
+    # Pipeline - which pipeline calculated these metrics
+    pipeline = Column(String(20))  # technical or fundamental
+
+    # Mention velocity (social/news signals)
+    mentions_1d = Column(Integer, default=0)
+    mentions_7d = Column(Integer, default=0)
+    mentions_30d = Column(Integer, default=0)
+    mention_velocity = Column(Float)  # 7d/30d ratio (>1 = accelerating)
+    sentiment_score = Column(Float)  # -1 to 1 (bearish to bullish)
+
+    # Price-based metrics (theme basket)
+    basket_return_1d = Column(Float)  # Equal-weight basket return
+    basket_return_1w = Column(Float)
+    basket_return_1m = Column(Float)
+    basket_rs_vs_spy = Column(Float)  # Relative strength vs SPY (0-100)
+
+    # Correlation metrics
+    avg_internal_correlation = Column(Float)  # Avg pairwise corr within theme
+    correlation_tightness = Column(Float)  # Std dev of internal correlations (lower = tighter)
+
+    # Breadth metrics
+    num_constituents = Column(Integer, default=0)
+    pct_above_50ma = Column(Float)  # % of stocks above 50-day MA
+    pct_above_200ma = Column(Float)
+    pct_positive_1w = Column(Float)  # % of stocks up on the week
+
+    # Screener integration
+    num_passing_minervini = Column(Integer, default=0)
+    num_stage_2 = Column(Integer, default=0)
+    avg_rs_rating = Column(Float)
+
+    # Composite score (for ranking)
+    momentum_score = Column(Float)  # Composite of velocity + RS + breadth
+    rank = Column(Integer)  # 1 = top theme
+
+    # Classification
+    status = Column(String(20))  # emerging, trending, fading, dormant
+
+    # Metadata
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("theme_cluster_id", "date", name="uix_theme_metrics_date"),
+        Index("idx_theme_metrics_date", "theme_cluster_id", "date"),
+        Index("idx_theme_rank", "date", "rank"),
+        Index("idx_theme_metrics_pipeline_date", "pipeline", "date"),
+    )
+
+
+class ThemeAlert(Base):
+    """Alerts for theme events (new themes, breakouts, etc.)"""
+
+    __tablename__ = "theme_alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    theme_cluster_id = Column(Integer, index=True)  # FK to theme_clusters (optional)
+
+    # Alert type
+    alert_type = Column(String(30), nullable=False, index=True)
+    # Types: new_theme, velocity_spike, breakout, new_constituent,
+    #        correlation_spike, theme_confirmed, theme_fading
+
+    # Alert content
+    title = Column(String(200), nullable=False)
+    description = Column(Text)
+    severity = Column(String(10), default="info")  # info, warning, critical
+
+    # Related data
+    related_tickers = Column(JSON)  # List of relevant tickers
+    metrics = Column(JSON)  # Relevant metrics at time of alert
+
+    # Status
+    is_read = Column(Boolean, default=False)
+    is_dismissed = Column(Boolean, default=False)
+
+    # Timestamps
+    triggered_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    read_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("idx_alert_unread", "is_read", "triggered_at"),
+    )
+
+
+class ThemePipelineRun(Base):
+    """Track theme discovery pipeline executions for async processing"""
+
+    __tablename__ = "theme_pipeline_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String(36), nullable=False, unique=True, index=True)  # UUID
+    task_id = Column(String(100), nullable=True)  # Celery task ID for progress polling
+
+    # Pipeline results summary
+    total_sources = Column(Integer, default=0)
+    items_ingested = Column(Integer, default=0)
+    items_processed = Column(Integer, default=0)
+    themes_extracted = Column(Integer, default=0)
+    themes_updated = Column(Integer, default=0)
+    alerts_generated = Column(Integer, default=0)
+
+    # Current step tracking (for progress UI)
+    current_step = Column(String(50))  # ingestion, extraction, metrics, alerts, completed
+
+    # Status
+    status = Column(String(20), default="queued")  # queued, running, completed, failed
+    error_message = Column(Text, nullable=True)
+
+    # Timestamps
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class ThemeEmbedding(Base):
+    """Vector embeddings for theme clusters for semantic similarity search"""
+
+    __tablename__ = "theme_embeddings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    theme_cluster_id = Column(Integer, nullable=False, unique=True, index=True)
+
+    # Embedding data
+    embedding = Column(Text, nullable=False)  # JSON-serialized numpy array
+    embedding_model = Column(String(50), default="all-MiniLM-L6-v2")
+    embedding_text = Column(Text)  # The text that was embedded (for debugging)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ThemeMergeSuggestion(Base):
+    """Queue of theme pairs suggested for merging"""
+
+    __tablename__ = "theme_merge_suggestions"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Theme pair
+    source_cluster_id = Column(Integer, nullable=False, index=True)  # Theme to merge FROM
+    target_cluster_id = Column(Integer, nullable=False, index=True)  # Theme to merge INTO
+
+    # Similarity scores
+    embedding_similarity = Column(Float)  # Cosine similarity
+    llm_confidence = Column(Float)  # LLM's confidence in merge decision
+    llm_reasoning = Column(Text)  # LLM's explanation
+    llm_relationship = Column(String(20))  # identical, subset, related, distinct
+    suggested_canonical_name = Column(String(200))  # LLM's suggested merged name
+
+    # Status
+    status = Column(String(20), default="pending", index=True)  # pending, approved, rejected, auto_merged
+    reviewed_at = Column(DateTime(timezone=True))
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    __table_args__ = (
+        UniqueConstraint("source_cluster_id", "target_cluster_id", name="uix_merge_suggestion_pair"),
+    )
+
+
+class ThemeMergeHistory(Base):
+    """Audit trail for theme merges"""
+
+    __tablename__ = "theme_merge_history"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Original IDs (may be deleted after merge)
+    source_cluster_id = Column(Integer)
+    source_cluster_name = Column(String(200), nullable=False)
+    target_cluster_id = Column(Integer)
+    target_cluster_name = Column(String(200), nullable=False)
+
+    # Merge details
+    merge_type = Column(String(20), nullable=False, index=True)  # auto, manual, llm_suggested
+    embedding_similarity = Column(Float)
+    llm_confidence = Column(Float)
+    llm_reasoning = Column(Text)
+
+    # Stats
+    constituents_merged = Column(Integer, default=0)  # Number of stocks reassigned
+    mentions_merged = Column(Integer, default=0)  # Number of mentions reassigned
+
+    # Timestamps
+    merged_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    merged_by = Column(String(50), default="system")  # 'system' or user identifier

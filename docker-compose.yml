@@ -1,0 +1,165 @@
+services:
+  # Redis (Celery broker + cache)
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=sqlite:////app/data/stockscanner.db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      # CORS - configurable for production, defaults to localhost for dev
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost,http://localhost:80,http://frontend}
+      # API Keys (from .env or .env.docker)
+      - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_API_KEYS=${GROQ_API_KEYS:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - SERPER_API_KEY=${SERPER_API_KEY:-}
+      # LLM Routing (optional overrides)
+      - LLM_DEFAULT_PROVIDER=${LLM_DEFAULT_PROVIDER:-groq}
+      - LLM_CHATBOT_MODEL=${LLM_CHATBOT_MODEL:-}
+      - LLM_RESEARCH_MODEL=${LLM_RESEARCH_MODEL:-}
+      - LLM_FALLBACK_ENABLED=${LLM_FALLBACK_ENABLED:-true}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Celery Worker - General Queue (concurrency=1 for SQLite safety)
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=1 -Q celery -n general@%h
+    environment:
+      # Set HOME for yfinance cache (writes to /app/data/.cache/py-yfinance)
+      - HOME=/app/data
+      - DATABASE_URL=sqlite:////app/data/stockscanner.db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      # API Keys
+      - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_API_KEYS=${GROQ_API_KEYS:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - SERPER_API_KEY=${SERPER_API_KEY:-}
+      # LLM Routing
+      - LLM_DEFAULT_PROVIDER=${LLM_DEFAULT_PROVIDER:-groq}
+      - LLM_CHATBOT_MODEL=${LLM_CHATBOT_MODEL:-}
+      - LLM_RESEARCH_MODEL=${LLM_RESEARCH_MODEL:-}
+      - LLM_FALLBACK_ENABLED=${LLM_FALLBACK_ENABLED:-true}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - backend
+      - redis
+    restart: unless-stopped
+
+  # Celery Worker - Data Fetch Queue (serialized, concurrency=1)
+  celery-datafetch:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=1 -Q data_fetch -n datafetch@%h
+    environment:
+      # Set HOME for yfinance cache (writes to /app/data/.cache/py-yfinance)
+      - HOME=/app/data
+      - DATABASE_URL=sqlite:////app/data/stockscanner.db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      # API Keys
+      - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_API_KEYS=${GROQ_API_KEYS:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+      - SERPER_API_KEY=${SERPER_API_KEY:-}
+      # LLM Routing
+      - LLM_DEFAULT_PROVIDER=${LLM_DEFAULT_PROVIDER:-groq}
+      - LLM_CHATBOT_MODEL=${LLM_CHATBOT_MODEL:-}
+      - LLM_RESEARCH_MODEL=${LLM_RESEARCH_MODEL:-}
+      - LLM_FALLBACK_ENABLED=${LLM_FALLBACK_ENABLED:-true}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - backend
+      - redis
+    restart: unless-stopped
+
+  # Celery Beat Scheduler
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: celery -A app.celery_app beat --loglevel=info --schedule=/app/data/celerybeat-schedule
+    environment:
+      - DATABASE_URL=sqlite:////app/data/stockscanner.db
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - backend
+      - redis
+    restart: unless-stopped
+
+  # Frontend (React served by nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=/api
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  redis_data:

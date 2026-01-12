@@ -1,0 +1,758 @@
+"""
+Theme Extraction Service
+
+Uses LLMService (via LiteLLM) to extract themes and tickers from unstructured content.
+This is the core intelligence layer that identifies market themes from text.
+Falls back to Google Gemini if LiteLLM providers are unavailable.
+"""
+import json
+import logging
+import os
+import re
+import time
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy.orm import Session
+
+from ..models.theme import ContentItem, ThemeMention, ThemeCluster, ThemeConstituent
+from ..config import settings
+from .llm import LLMService, LLMError
+
+# Optional Gemini import for fallback
+# Suppress Pydantic warnings from google-genai library (third-party issue)
+import warnings
+warnings.filterwarnings("ignore", message="Field name .* shadows an attribute in parent")
+
+try:
+    from google import genai
+    from google.genai import types
+    GEMINI_AVAILABLE = True
+except ImportError:
+    GEMINI_AVAILABLE = False
+    genai = None
+    types = None
+
+logger = logging.getLogger(__name__)
+
+
+# System prompt for theme extraction
+EXTRACTION_SYSTEM_PROMPT = """You are a financial analyst AI that extracts market themes and stock mentions from text.
+
+Your task is to identify:
+1. MARKET THEMES - Investment narratives, sector trends, or thematic plays mentioned in the text
+   Examples: "AI infrastructure", "GLP-1 weight loss drugs", "nuclear energy renaissance",
+   "defense drones", "quantum computing", "nearshoring/reshoring", "datacenter power demand"
+
+2. STOCK TICKERS - US-listed stock symbols mentioned or clearly implied
+   - Only include actual tradeable US stock tickers (NYSE, NASDAQ)
+   - Convert company names to tickers when confident (e.g., "Nvidia" -> "NVDA")
+   - Do NOT include ETFs, indices, or non-US stocks unless they're ADRs
+
+3. SENTIMENT - The author's view on each theme (bullish, bearish, neutral)
+
+4. CONFIDENCE - Your confidence in the extraction (0.0 to 1.0)
+
+IMPORTANT RULES:
+- Only extract themes that are INVESTMENT-RELATED (not general news topics)
+- A theme must be actionable - something an investor could trade on
+- Group related concepts into canonical theme names
+- If no clear themes are present, return an empty list
+- Be conservative - only extract high-confidence mentions
+- Prefer specific themes over vague ones ("AI chip demand" > "technology")
+"""
+
+EXTRACTION_USER_PROMPT = """Extract market themes and stock tickers from this content.
+
+Source: {source_name} ({source_type})
+Published: {published_at}
+
+Title: {title}
+
+Content:
+{content}
+
+---
+
+Return a JSON array of theme mentions. Each mention should have:
+- theme: string (the market theme/narrative)
+- tickers: array of strings (US stock tickers related to this theme in this content)
+- sentiment: string ("bullish", "bearish", or "neutral")
+- confidence: float (0.0 to 1.0)
+- excerpt: string (relevant quote from content, max 200 chars)
+
+Example output:
+[
+  {{
+    "theme": "AI Infrastructure",
+    "tickers": ["NVDA", "AVGO", "MRVL"],
+    "sentiment": "bullish",
+    "confidence": 0.9,
+    "excerpt": "The buildout of AI datacenters is accelerating faster than expected..."
+  }}
+]
+
+If no investment themes are found, return an empty array: []
+
+Return ONLY the JSON array, no other text."""
+
+
+class ThemeExtractionService:
+    """Service for extracting themes from content using LLMService or Google Gemini API"""
+
+    # Gemini models (fallback if LiteLLM providers not available)
+    GEMINI_MODELS = [
+        "models/gemini-2.0-flash",
+        "models/gemini-2.0-flash-lite",
+        "models/gemini-2.5-flash",
+    ]
+
+    def __init__(self, db: Session, pipeline: str = "technical"):
+        self.db = db
+        self.pipeline = pipeline
+        self.pipeline_config = None
+        self._load_pipeline_config()
+
+        self.llm = None
+        self.gemini_client = None
+        self.provider = None  # 'litellm' or 'gemini'
+        self.configured_model = None  # Model ID from settings
+        self._load_configured_model()
+        self._init_client()
+
+        # Known ticker patterns for validation
+        self.ticker_pattern = re.compile(r'^[A-Z]{1,5}$')
+
+        # Cache of valid tickers (loaded from universe)
+        self._valid_tickers: Optional[set] = None
+
+        # Rate limiting
+        self._last_request_time = 0
+        self._min_request_interval = 0.5  # 0.5 seconds for most providers
+
+    def _load_pipeline_config(self):
+        """Load pipeline-specific configuration"""
+        try:
+            from ..config.pipeline_config import get_pipeline_config
+            self.pipeline_config = get_pipeline_config(self.pipeline)
+            logger.info(f"Loaded pipeline config for: {self.pipeline}")
+        except Exception as e:
+            logger.warning(f"Could not load pipeline config: {e}. Using defaults.")
+            self.pipeline_config = None
+
+    def _load_configured_model(self):
+        """Load configured model from database settings"""
+        try:
+            from ..models.app_settings import AppSetting
+            setting = self.db.query(AppSetting).filter(AppSetting.key == "llm_extraction_model").first()
+            if setting:
+                self.configured_model = setting.value
+                logger.info(f"Using configured extraction model: {self.configured_model}")
+
+                # Set OLLAMA_API_BASE if using Ollama model
+                if self.configured_model.startswith("ollama"):
+                    ollama_setting = self.db.query(AppSetting).filter(AppSetting.key == "ollama_api_base").first()
+                    if ollama_setting:
+                        os.environ["OLLAMA_API_BASE"] = ollama_setting.value
+                        logger.info(f"Set OLLAMA_API_BASE to: {ollama_setting.value}")
+            else:
+                self.configured_model = None
+        except Exception as e:
+            logger.warning(f"Could not load configured model: {e}")
+            self.configured_model = None
+
+    def _init_client(self):
+        """Initialize LLM client - try LLMService first, then Gemini"""
+        # Try LLMService first (supports multiple providers via LiteLLM)
+        try:
+            self.llm = LLMService(use_case="extraction")
+            self.provider = "litellm"
+            self._min_request_interval = 0.5
+            logger.info("LLMService initialized for theme extraction")
+            return
+        except Exception as e:
+            logger.warning(f"LLMService initialization failed: {e}")
+
+        # Fallback to Gemini
+        gemini_api_key = getattr(settings, "gemini_api_key", None) or getattr(settings, "google_api_key", None)
+        if not gemini_api_key:
+            gemini_api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+
+        if gemini_api_key and GEMINI_AVAILABLE:
+            self.gemini_client = genai.Client(api_key=gemini_api_key)
+            self.provider = "gemini"
+            self._min_request_interval = 15.0  # Gemini has lower rate limit
+            logger.info("Gemini API client initialized for theme extraction (fallback)")
+            return
+
+        logger.warning("No LLM provider available - theme extraction will be disabled")
+
+    def _get_valid_tickers(self) -> set:
+        """Get set of valid tickers from stock universe"""
+        if self._valid_tickers is None:
+            from ..models.stock_universe import StockUniverse
+            tickers = self.db.query(StockUniverse.symbol).all()
+            self._valid_tickers = {t[0] for t in tickers}
+        return self._valid_tickers
+
+    def _validate_ticker(self, ticker: str) -> bool:
+        """Check if ticker is valid"""
+        if not self.ticker_pattern.match(ticker):
+            return False
+
+        valid_tickers = self._get_valid_tickers()
+        if valid_tickers and ticker not in valid_tickers:
+            return False
+
+        return True
+
+    def _clean_tickers(self, tickers: list) -> list:
+        """Filter and clean ticker list"""
+        cleaned = []
+        for t in tickers:
+            t = t.upper().strip()
+            # Remove common false positives
+            if t in {"A", "I", "AI", "CEO", "CFO", "IPO", "ETF", "NYSE", "SEC", "FDA", "GDP", "CPI"}:
+                continue
+            if self._validate_ticker(t):
+                cleaned.append(t)
+        return list(set(cleaned))  # Dedupe
+
+    def _rate_limit(self):
+        """Apply rate limiting between API calls"""
+        now = time.time()
+        elapsed = now - self._last_request_time
+        if elapsed < self._min_request_interval:
+            time.sleep(self._min_request_interval - elapsed)
+        self._last_request_time = time.time()
+
+    def _try_generate_litellm(self, prompt: str) -> str:
+        """Try to generate content with LLMService (LiteLLM)"""
+        import asyncio
+
+        system_prompt = self._get_system_prompt()
+
+        # Use configured model if set
+        model_override = self.configured_model if self.configured_model else None
+
+        async def _call():
+            response = await self.llm.completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                model=model_override,  # Use configured model or preset default
+                temperature=0.2,
+                max_tokens=2000,
+            )
+            return LLMService.extract_content(response)
+
+        # Run async in sync context
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            # Already in async context - create a task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, _call())
+                return future.result()
+        else:
+            return asyncio.run(_call())
+
+    def _try_generate_gemini(self, prompt: str, model: str) -> str:
+        """Try to generate content with Gemini API"""
+        system_prompt = self._get_system_prompt()
+        response = self.gemini_client.models.generate_content(
+            model=model,
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[types.Part(text=system_prompt + "\n\n" + prompt)]
+                )
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                max_output_tokens=2000,
+            )
+        )
+        return response.text.strip()
+
+    def _get_system_prompt(self) -> str:
+        """Get the system prompt, optionally with pipeline-specific additions"""
+        base_prompt = EXTRACTION_SYSTEM_PROMPT
+
+        if self.pipeline_config and self.pipeline_config.extraction_prompt_additions:
+            # Add pipeline-specific instructions
+            additions = self.pipeline_config.extraction_prompt_additions
+            examples = self.pipeline_config.theme_examples
+            examples_str = ", ".join(f'"{e}"' for e in examples[:5]) if examples else ""
+
+            pipeline_section = f"""
+
+PIPELINE: {self.pipeline_config.display_name.upper()}
+{additions}
+
+Example themes for this pipeline: {examples_str}
+"""
+            return base_prompt + pipeline_section
+
+        return base_prompt
+
+    def extract_from_content(self, content_item: ContentItem) -> list[dict]:
+        """
+        Extract themes from a single content item using LLM (Groq or Gemini)
+
+        Returns list of extracted theme mentions
+        """
+        if not self.provider:
+            logger.error("No LLM client initialized")
+            return []
+
+        # Truncate content if too long
+        content = content_item.content or ""
+        if len(content) > 10000:
+            content = content[:10000] + "... [truncated]"
+
+        prompt = EXTRACTION_USER_PROMPT.format(
+            source_name=content_item.source_name or "Unknown",
+            source_type=content_item.source_type or "Unknown",
+            published_at=content_item.published_at.isoformat() if content_item.published_at else "Unknown",
+            title=content_item.title or "",
+            content=content,
+        )
+
+        try:
+            # Apply rate limiting
+            self._rate_limit()
+
+            # Try to generate based on provider
+            response_text = None
+            last_error = None
+
+            if self.provider == "litellm":
+                try:
+                    response_text = self._try_generate_litellm(prompt)
+                except Exception as e:
+                    logger.warning(f"LLMService failed: {e}")
+                    last_error = e
+                    # Fallback to Gemini if available
+                    if self.gemini_client:
+                        self.provider = "gemini"
+
+            if self.provider == "gemini" and response_text is None:
+                for model in self.GEMINI_MODELS:
+                    try:
+                        response_text = self._try_generate_gemini(prompt, model)
+                        break
+                    except Exception as e:
+                        error_str = str(e)
+                        if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "rate_limit" in error_str.lower():
+                            wait_time = 15
+                            logger.warning(f"Rate limited on {model}, waiting {wait_time}s before trying next model...")
+                            time.sleep(wait_time)
+                            last_error = e
+                            continue
+                        else:
+                            raise
+
+            if response_text is None:
+                raise last_error or Exception("All providers exhausted")
+
+            # Extract JSON from response
+            # Handle Qwen3 thinking tags first
+            if "<think>" in response_text and "</think>" in response_text:
+                response_text = response_text.split("</think>")[-1].strip()
+
+            # Handle markdown code blocks
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0]
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0]
+
+            # Strip whitespace
+            response_text = response_text.strip()
+
+            # Debug log if response seems problematic
+            if not response_text or not response_text.startswith('['):
+                logger.warning(f"Unexpected LLM response format: {response_text[:200] if response_text else 'EMPTY'}")
+
+            mentions = json.loads(response_text)
+
+            # Validate and clean extractions
+            cleaned_mentions = []
+            for mention in mentions:
+                if not mention.get("theme"):
+                    continue
+
+                # Clean tickers
+                tickers = self._clean_tickers(mention.get("tickers", []))
+
+                cleaned_mentions.append({
+                    "theme": mention["theme"].strip(),
+                    "tickers": tickers,
+                    "sentiment": mention.get("sentiment", "neutral"),
+                    "confidence": min(1.0, max(0.0, float(mention.get("confidence", 0.5)))),
+                    "excerpt": (mention.get("excerpt", ""))[:500],  # Limit excerpt length
+                })
+
+            return cleaned_mentions
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse LLM response as JSON: {e}")
+            logger.error(f"Raw response text: {response_text[:500] if response_text else 'EMPTY'}")
+            return []
+        except Exception as e:
+            logger.error(f"Error extracting themes: {e}")
+            return []
+
+    def process_content_item(self, content_item: ContentItem) -> int:
+        """
+        Process a content item: extract themes and store mentions
+
+        Returns number of theme mentions created
+        """
+        # Extract themes
+        mentions = self.extract_from_content(content_item)
+
+        # Store mentions
+        mention_count = 0
+        for mention_data in mentions:
+            # Get or create the theme cluster first
+            cluster = self._get_or_create_cluster(mention_data)
+
+            # Create mention linked to cluster
+            theme_mention = ThemeMention(
+                content_item_id=content_item.id,
+                theme_cluster_id=cluster.id,  # Link to cluster!
+                source_type=content_item.source_type,
+                source_name=content_item.source_name,
+                raw_theme=mention_data["theme"],
+                canonical_theme=self._normalize_theme(mention_data["theme"]),
+                pipeline=self.pipeline,  # Set pipeline from service instance
+                tickers=mention_data["tickers"],
+                ticker_count=len(mention_data["tickers"]),
+                sentiment=mention_data["sentiment"],
+                confidence=mention_data["confidence"],
+                excerpt=mention_data["excerpt"],
+                mentioned_at=content_item.published_at,
+            )
+            self.db.add(theme_mention)
+            mention_count += 1
+
+            # Update theme constituents (ticker-to-theme mapping)
+            self._update_theme_constituents(mention_data, cluster)
+
+        # Mark content as processed
+        content_item.is_processed = True
+        content_item.processed_at = datetime.utcnow()
+
+        self.db.commit()
+
+        logger.info(f"Extracted {mention_count} theme mentions from content item {content_item.id}")
+        return mention_count
+
+    def _normalize_theme(self, theme: str) -> str:
+        """
+        Normalize theme name to canonical form
+
+        This helps cluster similar themes:
+        - "AI infrastructure" = "AI Infra" = "AI Infrastructure buildout"
+        - "GLP-1" = "GLP1" = "Weight loss drugs"
+        """
+        # Convert to title case and strip
+        theme = theme.strip().title()
+
+        # Common normalizations
+        normalizations = {
+            # AI themes
+            "Ai Infrastructure": "AI Infrastructure",
+            "Ai Infra": "AI Infrastructure",
+            "Ai Datacenter": "AI Infrastructure",
+            "Ai Data Center": "AI Infrastructure",
+            "Ai Chips": "AI Semiconductors",
+            "Ai Semiconductor": "AI Semiconductors",
+
+            # Healthcare
+            "Glp-1": "GLP-1 Weight Loss",
+            "Glp1": "GLP-1 Weight Loss",
+            "Weight Loss Drugs": "GLP-1 Weight Loss",
+            "Obesity Drugs": "GLP-1 Weight Loss",
+
+            # Energy
+            "Nuclear Power": "Nuclear Energy",
+            "Nuclear Renaissance": "Nuclear Energy",
+            "Uranium": "Nuclear Energy",
+
+            # Defense
+            "Defense Drones": "Defense & Drones",
+            "Military Drones": "Defense & Drones",
+            "Defense Technology": "Defense & Drones",
+
+            # Quantum
+            "Quantum": "Quantum Computing",
+            "Quantum Tech": "Quantum Computing",
+
+            # Manufacturing
+            "Reshoring": "Nearshoring & Reshoring",
+            "Nearshoring": "Nearshoring & Reshoring",
+            "Onshoring": "Nearshoring & Reshoring",
+
+            # Crypto
+            "Bitcoin": "Crypto & Bitcoin",
+            "Cryptocurrency": "Crypto & Bitcoin",
+            "Bitcoin Mining": "Bitcoin Miners",
+            "Crypto Mining": "Bitcoin Miners",
+        }
+
+        return normalizations.get(theme, theme)
+
+    def _get_or_create_cluster(self, mention_data: dict) -> ThemeCluster:
+        """Get or create theme cluster for a mention, returns the cluster"""
+        canonical_theme = self._normalize_theme(mention_data["theme"])
+
+        # Find or create theme cluster - only match within same pipeline
+        cluster = self.db.query(ThemeCluster).filter(
+            ThemeCluster.name == canonical_theme,
+            ThemeCluster.pipeline == self.pipeline,
+        ).first()
+
+        if not cluster:
+            cluster = ThemeCluster(
+                name=canonical_theme,
+                aliases=[mention_data["theme"]],
+                pipeline=self.pipeline,  # Set pipeline from service instance
+                discovery_source="llm_extraction",
+                first_seen_at=datetime.utcnow(),
+                last_seen_at=datetime.utcnow(),
+                is_emerging=True,
+            )
+            self.db.add(cluster)
+            self.db.flush()  # Get ID
+
+            logger.info(f"Discovered new theme cluster: {canonical_theme} (pipeline={self.pipeline})")
+
+        else:
+            cluster.last_seen_at = datetime.utcnow()
+            # Add alias if new
+            if cluster.aliases is None:
+                cluster.aliases = []
+            if mention_data["theme"] not in cluster.aliases:
+                cluster.aliases = cluster.aliases + [mention_data["theme"]]
+
+        return cluster
+
+    def _update_theme_constituents(self, mention_data: dict, cluster: ThemeCluster):
+        """Update theme-to-ticker mapping based on mention"""
+        # Update constituents
+        for ticker in mention_data["tickers"]:
+            constituent = self.db.query(ThemeConstituent).filter(
+                ThemeConstituent.theme_cluster_id == cluster.id,
+                ThemeConstituent.symbol == ticker
+            ).first()
+
+            if not constituent:
+                constituent = ThemeConstituent(
+                    theme_cluster_id=cluster.id,
+                    symbol=ticker,
+                    source="llm_extraction",
+                    confidence=mention_data["confidence"],
+                    mention_count=1,
+                    first_mentioned_at=datetime.utcnow(),
+                    last_mentioned_at=datetime.utcnow(),
+                )
+                self.db.add(constituent)
+            else:
+                constituent.mention_count += 1
+                constituent.last_mentioned_at = datetime.utcnow()
+                # Update confidence (weighted average)
+                constituent.confidence = (
+                    constituent.confidence * 0.8 + mention_data["confidence"] * 0.2
+                )
+
+    def process_batch(self, limit: int = 50) -> dict:
+        """
+        Process a batch of unprocessed content items
+
+        Filters content items to only those from sources assigned to this pipeline.
+
+        Returns summary of processing results
+        """
+        from ..models.theme import ContentSource
+
+        # Get source IDs that are assigned to this pipeline
+        # pipelines column is JSON array like ["technical", "fundamental"]
+        pipeline_source_ids = []
+        sources = self.db.query(ContentSource).filter(
+            ContentSource.is_active == True
+        ).all()
+
+        for source in sources:
+            source_pipelines = source.pipelines or ["technical", "fundamental"]
+            if isinstance(source_pipelines, str):
+                import json
+                try:
+                    source_pipelines = json.loads(source_pipelines)
+                except:
+                    source_pipelines = ["technical", "fundamental"]
+            if self.pipeline in source_pipelines:
+                pipeline_source_ids.append(source.id)
+
+        # Get unprocessed items from sources in this pipeline
+        query = self.db.query(ContentItem).filter(
+            ContentItem.is_processed == False
+        )
+
+        if pipeline_source_ids:
+            query = query.filter(ContentItem.source_id.in_(pipeline_source_ids))
+
+        items = query.order_by(
+            ContentItem.published_at.desc()
+        ).limit(limit).all()
+
+        results = {
+            "processed": 0,
+            "total_mentions": 0,
+            "errors": 0,
+            "new_themes": [],
+            "pipeline": self.pipeline,
+        }
+
+        for item in items:
+            try:
+                mention_count = self.process_content_item(item)
+                results["processed"] += 1
+                results["total_mentions"] += mention_count
+            except Exception as e:
+                logger.error(f"Error processing item {item.id}: {e}")
+                item.is_processed = True
+                item.extraction_error = str(e)
+                self.db.commit()
+                results["errors"] += 1
+
+        # Get newly discovered themes
+        recent_themes = self.db.query(ThemeCluster).filter(
+            ThemeCluster.first_seen_at >= datetime.utcnow().replace(hour=0, minute=0, second=0)
+        ).all()
+        results["new_themes"] = [t.name for t in recent_themes]
+
+        # Auto-update metrics for all themes so rankings are current
+        if results["processed"] > 0:
+            try:
+                from .theme_discovery_service import ThemeDiscoveryService
+                discovery_service = ThemeDiscoveryService(self.db)
+                metrics_result = discovery_service.update_all_theme_metrics()
+                results["metrics_updated"] = metrics_result.get("themes_updated", 0)
+                logger.info(f"Auto-updated metrics for {results['metrics_updated']} themes")
+            except Exception as e:
+                logger.error(f"Error auto-updating theme metrics: {e}")
+                results["metrics_updated"] = 0
+
+        return results
+
+
+class ThemeNormalizationService:
+    """
+    Service for normalizing and clustering themes
+
+    Uses embeddings to find similar themes and merge them
+    """
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def find_similar_themes(self, theme_name: str, threshold: float = 0.8) -> list[ThemeCluster]:
+        """
+        Find existing theme clusters similar to given theme name
+
+        For now uses simple string matching - can be upgraded to use embeddings
+        """
+        # Simple approach: check for substring matches and common words
+        theme_lower = theme_name.lower()
+        theme_words = set(theme_lower.split())
+
+        similar = []
+        all_clusters = self.db.query(ThemeCluster).filter(
+            ThemeCluster.is_active == True
+        ).all()
+
+        for cluster in all_clusters:
+            cluster_lower = cluster.name.lower()
+            cluster_words = set(cluster_lower.split())
+
+            # Check for exact substring match
+            if theme_lower in cluster_lower or cluster_lower in theme_lower:
+                similar.append(cluster)
+                continue
+
+            # Check word overlap (Jaccard similarity)
+            if theme_words and cluster_words:
+                intersection = len(theme_words & cluster_words)
+                union = len(theme_words | cluster_words)
+                jaccard = intersection / union
+
+                if jaccard >= threshold:
+                    similar.append(cluster)
+
+        return similar
+
+    def merge_clusters(self, source_id: int, target_id: int):
+        """Merge source cluster into target cluster"""
+        source = self.db.query(ThemeCluster).filter(ThemeCluster.id == source_id).first()
+        target = self.db.query(ThemeCluster).filter(ThemeCluster.id == target_id).first()
+
+        if not source or not target:
+            return
+
+        # Move mentions
+        self.db.query(ThemeMention).filter(
+            ThemeMention.theme_cluster_id == source_id
+        ).update({ThemeMention.theme_cluster_id: target_id})
+
+        # Merge constituents
+        source_constituents = self.db.query(ThemeConstituent).filter(
+            ThemeConstituent.theme_cluster_id == source_id
+        ).all()
+
+        for sc in source_constituents:
+            target_constituent = self.db.query(ThemeConstituent).filter(
+                ThemeConstituent.theme_cluster_id == target_id,
+                ThemeConstituent.symbol == sc.symbol
+            ).first()
+
+            if target_constituent:
+                # Merge counts
+                target_constituent.mention_count += sc.mention_count
+                target_constituent.first_mentioned_at = min(
+                    target_constituent.first_mentioned_at or datetime.utcnow(),
+                    sc.first_mentioned_at or datetime.utcnow()
+                )
+                target_constituent.last_mentioned_at = max(
+                    target_constituent.last_mentioned_at or datetime.min,
+                    sc.last_mentioned_at or datetime.min
+                )
+                self.db.delete(sc)
+            else:
+                sc.theme_cluster_id = target_id
+
+        # Update target aliases
+        if target.aliases is None:
+            target.aliases = []
+        if source.aliases:
+            target.aliases = list(set(target.aliases + source.aliases + [source.name]))
+        else:
+            target.aliases = list(set(target.aliases + [source.name]))
+
+        # Update first seen
+        target.first_seen_at = min(
+            target.first_seen_at or datetime.utcnow(),
+            source.first_seen_at or datetime.utcnow()
+        )
+
+        # Deactivate source
+        source.is_active = False
+
+        self.db.commit()
+        logger.info(f"Merged theme cluster '{source.name}' into '{target.name}'")
