@@ -168,7 +168,7 @@ function FilterPanel({
     }
     if (filters.ipoAfter) {
       const ipoLabel = filters.ipoAfter.toUpperCase();
-      active.push({ key: 'ipoAfter', label: `IPO: <${ipoLabel}` });
+      active.push({ key: 'ipoAfter', label: `IPO: >${ipoLabel}` });
     }
 
     // Score filters

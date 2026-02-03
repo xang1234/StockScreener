@@ -381,6 +381,13 @@ async def get_scan_status(
         if scan.status == "completed":
             progress = 100.0
             completed_stocks = scan.total_stocks or 0
+        elif scan.status == "cancelled":
+            completed_count = db.query(ScanResult).filter(
+                ScanResult.scan_id == scan_id
+            ).count()
+            completed_stocks = completed_count
+            progress = (completed_stocks / scan.total_stocks * 100) if scan.total_stocks else 0
+            eta_seconds = None
         elif scan.status == "failed":
             progress = 0.0
             completed_stocks = 0
@@ -922,6 +929,8 @@ async def get_scan_results(
             sort_field = ScanResult.volume_breakthrough_score
         elif sort_by == "price" or sort_by == "current_price":
             sort_field = ScanResult.price
+        elif sort_by == "price_change_1d":
+            sort_field = ScanResult.price_change_1d
         elif sort_by == "rs_rating":
             # Phase 3.3: Now indexed column, can sort in SQL
             sort_field = ScanResult.rs_rating
@@ -961,6 +970,12 @@ async def get_scan_results(
         elif sort_by == "gics_sector":
             # Industry classification indexed column
             sort_field = ScanResult.gics_sector
+        elif sort_by == "rs_trend":
+            sort_field = ScanResult.rs_trend
+        elif sort_by == "volume":
+            sort_field = ScanResult.volume
+        elif sort_by == "market_cap":
+            sort_field = ScanResult.market_cap
         elif sort_by == "ipo_date":
             # IPO date indexed column
             sort_field = ScanResult.ipo_date
@@ -1096,53 +1111,6 @@ async def get_scan_results(
     except Exception as e:
         logger.error(f"Error getting scan results: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error getting scan results: {str(e)}")
-
-
-@router.get("")
-async def list_scans(
-    page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
-    db: Session = Depends(get_db)
-):
-    """
-    List all scans with pagination.
-
-    Args:
-        page: Page number
-        per_page: Results per page
-        db: Database session
-
-    Returns:
-        List of scans
-    """
-    try:
-        total = db.query(Scan).count()
-
-        offset = (page - 1) * per_page
-        scans = db.query(Scan).order_by(desc(Scan.started_at)).offset(offset).limit(per_page).all()
-
-        return {
-            'total': total,
-            'page': page,
-            'per_page': per_page,
-            'pages': (total + per_page - 1) // per_page,
-            'scans': [
-                {
-                    'scan_id': scan.scan_id,
-                    'universe': scan.universe,
-                    'status': scan.status,
-                    'total_stocks': scan.total_stocks,
-                    'passed_stocks': scan.passed_stocks,
-                    'started_at': scan.started_at,
-                    'completed_at': scan.completed_at,
-                }
-                for scan in scans
-            ]
-        }
-
-    except Exception as e:
-        logger.error(f"Error listing scans: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error listing scans: {str(e)}")
 
 
 @router.delete("/{scan_id}")

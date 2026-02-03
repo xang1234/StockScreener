@@ -197,19 +197,23 @@ const VirtualTableRow = memo(function VirtualTableRow({ row, onRowClick, onRowHo
       </TableCell>
 
       <TableCell align="center" sx={{ width: 40, minWidth: 40 }}>
-        <Box
-          component="span"
-          sx={{
-            backgroundColor: getStageColor(row.stage),
-            color: 'white',
-            padding: '1px 4px',
-            borderRadius: '2px',
-            fontSize: '10px',
-            fontWeight: 500,
-          }}
-        >
-          S{row.stage}
-        </Box>
+        {row.stage != null ? (
+          <Box
+            component="span"
+            sx={{
+              backgroundColor: getStageColor(row.stage),
+              color: 'white',
+              padding: '1px 4px',
+              borderRadius: '2px',
+              fontSize: '10px',
+              fontWeight: 500,
+            }}
+          >
+            S{row.stage}
+          </Box>
+        ) : (
+          '-'
+        )}
       </TableCell>
 
       <TableCell align="right" sx={{ fontFamily: 'monospace', width: 65, minWidth: 65 }}>
@@ -302,7 +306,7 @@ const VirtualTableRow = memo(function VirtualTableRow({ row, onRowClick, onRowHo
  * Display scan results in a sortable, paginated table with row virtualization
  * @param {Function} onRowHover - Optional callback when hovering over a row (for prefetching)
  */
-function ResultsTable({ results, total, page, perPage, sortBy, sortOrder, onPageChange, onSortChange, onOpenChart, loading, onRowHover }) {
+function ResultsTable({ results, total, page, perPage, sortBy, sortOrder, onPageChange, onPerPageChange, onSortChange, onOpenChart, loading, onRowHover }) {
   const parentRef = useRef(null);
 
   const handleChangePage = useCallback((event, newPage) => {
@@ -418,8 +422,9 @@ function ResultsTable({ results, total, page, perPage, sortBy, sortOrder, onPage
         page={page - 1} // Material-UI uses 0-based pages
         onPageChange={handleChangePage}
         onRowsPerPageChange={(e) => {
+          const nextPerPage = Number(e.target.value);
+          onPerPageChange?.(nextPerPage);
           onPageChange(1); // Reset to first page when changing per-page
-          // Parent component should handle perPage change
         }}
       />
     </Paper>

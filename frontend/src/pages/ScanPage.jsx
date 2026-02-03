@@ -241,14 +241,14 @@ function ScanPage() {
     },
   });
 
-  // Poll scan status while running - stop when complete/failed/cancelled
+  // Poll scan status while running/queued - stop when complete/failed/cancelled
   const { data: statusData, error: statusError } = useQuery({
     queryKey: ['scanStatus', currentScanId],
     queryFn: () => getScanStatus(currentScanId),
-    enabled: !!currentScanId && scanStatus === 'running',
+    enabled: !!currentScanId && (scanStatus === 'running' || scanStatus === 'queued'),
     refetchInterval: (data) => {
       // Stop polling when scan is no longer running
-      if (data?.status && data.status !== 'running') {
+      if (data?.status && data.status !== 'running' && data.status !== 'queued') {
         return false;
       }
       return 2000; // Poll every 2 seconds while running
@@ -351,6 +351,11 @@ function ScanPage() {
     setSortBy(field);
     setSortOrder(order);
     setPage(1); // Reset to first page on sort change
+  };
+
+  const handlePerPageChange = (nextPerPage) => {
+    setPerPage(nextPerPage);
+    setPage(1);
   };
 
   // Handle filter change
@@ -980,6 +985,7 @@ function ScanPage() {
                 sortBy={sortBy}
                 sortOrder={sortOrder}
                 onPageChange={setPage}
+                onPerPageChange={handlePerPageChange}
                 onSortChange={handleSortChange}
                 onOpenChart={handleOpenChart}
                 onRowHover={handleRowHover}

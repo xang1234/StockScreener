@@ -151,6 +151,7 @@ export const getAllFilteredSymbols = async (scanId, params = {}) => {
     ...params,
     page: 1,
     per_page: 100,
+    include_sparklines: false,
   });
 
   const total = firstPage.total;
@@ -167,6 +168,7 @@ export const getAllFilteredSymbols = async (scanId, params = {}) => {
           ...params,
           page,
           per_page: 100,
+          include_sparklines: false,
         })
       );
     }
