@@ -505,6 +505,15 @@ function GroupRankingsPage() {
       return row.rank + change;
     }
 
+    if (column === 'pct_rs_above_80') {
+      if (row.pct_rs_above_80 !== null && row.pct_rs_above_80 !== undefined) {
+        return row.pct_rs_above_80;
+      }
+      if (!row.num_stocks) return null;
+      const count = row.num_stocks_rs_above_80 ?? 0;
+      return (count / row.num_stocks) * 100;
+    }
+
     return row[column];
   };
 
@@ -677,6 +686,15 @@ function GroupRankingsPage() {
                         #
                       </TableSortLabel>
                     </TableCell>
+                    <TableCell align="right">
+                      <TableSortLabel
+                        active={orderBy === 'pct_rs_above_80'}
+                        direction={orderBy === 'pct_rs_above_80' ? order : 'asc'}
+                        onClick={() => handleSort('pct_rs_above_80')}
+                      >
+                        80+%
+                      </TableSortLabel>
+                    </TableCell>
                     <TableCell align="right">Top</TableCell>
                     <TableCell align="right">
                       <TableSortLabel
@@ -751,6 +769,13 @@ function GroupRankingsPage() {
                         {row.avg_rs_rating?.toFixed(1)}
                       </TableCell>
                       <TableCell align="right" sx={{ fontFamily: 'monospace' }}>{row.num_stocks}</TableCell>
+                      <TableCell align="right" sx={{ fontFamily: 'monospace' }}>
+                        {row.pct_rs_above_80 != null
+                          ? `${row.pct_rs_above_80.toFixed(1)}%`
+                          : row.num_stocks
+                            ? `${(((row.num_stocks_rs_above_80 ?? 0) / row.num_stocks) * 100).toFixed(1)}%`
+                            : '-'}
+                      </TableCell>
                       <TableCell align="right" sx={{ color: 'text.secondary', fontWeight: 500 }}>
                         {row.top_symbol || '-'}
                       </TableCell>

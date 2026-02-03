@@ -11,8 +11,12 @@ class GroupRankResponse(BaseModel):
     date: str = Field(..., description="Ranking date (YYYY-MM-DD)")
     rank: int = Field(..., description="Current rank (1 = best)")
     avg_rs_rating: float = Field(..., description="Average RS rating of stocks in group")
+    median_rs_rating: Optional[float] = Field(None, description="Median RS rating of stocks in group")
+    weighted_avg_rs_rating: Optional[float] = Field(None, description="Market-cap weighted average RS rating")
+    rs_std_dev: Optional[float] = Field(None, description="RS rating dispersion (std dev)")
     num_stocks: int = Field(..., description="Number of stocks with valid RS")
     num_stocks_rs_above_80: Optional[int] = Field(None, description="Stocks with RS > 80")
+    pct_rs_above_80: Optional[float] = Field(None, description="Percent of stocks with RS > 80")
 
     # Top performer
     top_symbol: Optional[str] = Field(None, description="Best performing stock in group")
@@ -68,7 +72,11 @@ class GroupDetailResponse(BaseModel):
     industry_group: str = Field(..., description="IBD industry group name")
     current_rank: int = Field(..., description="Current rank")
     current_avg_rs: float = Field(..., description="Current average RS rating")
+    current_median_rs: Optional[float] = Field(None, description="Current median RS rating")
+    current_weighted_avg_rs: Optional[float] = Field(None, description="Current market-cap weighted average RS rating")
+    current_rs_std_dev: Optional[float] = Field(None, description="Current RS dispersion (std dev)")
     num_stocks: int = Field(..., description="Number of stocks in group")
+    pct_rs_above_80: Optional[float] = Field(None, description="Percent of stocks with RS > 80")
     top_symbol: Optional[str] = Field(None, description="Best performing stock")
     top_rs_rating: Optional[float] = Field(None, description="RS of top stock")
 

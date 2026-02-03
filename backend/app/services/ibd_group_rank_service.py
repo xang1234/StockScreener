@@ -4,6 +4,7 @@ Service for calculating and managing IBD Industry Group Rankings.
 Calculates daily rankings based on average RS rating of constituent stocks.
 """
 import logging
+import statistics
 from typing import Optional, Dict, List
 from datetime import datetime, date, timedelta
 import pandas as pd
@@ -12,6 +13,7 @@ from sqlalchemy import and_, desc
 
 from ..database import SessionLocal
 from ..models.industry import IBDGroupRank
+from ..models.stock_universe import StockUniverse
 from ..models.scan_result import Scan, ScanResult
 from .ibd_industry_service import IBDIndustryService
 from .price_cache_service import PriceCacheService
@@ -78,7 +80,7 @@ class IBDGroupRankService:
         logger.info(f"Found {len(all_groups)} IBD industry groups")
 
         # Pre-fetch ALL data upfront (SPY + all stock prices in single bulk fetch)
-        spy_data, all_prices, active_symbols = self._prefetch_all_data(db)
+        spy_data, all_prices, active_symbols, market_caps = self._prefetch_all_data(db)
 
         if spy_data is None or spy_data.empty:
             logger.error("Failed to get SPY benchmark data")
@@ -99,7 +101,7 @@ class IBDGroupRankService:
         for group_name in all_groups:
             try:
                 metrics = self._calculate_group_rs_from_cache(
-                    db, group_name, spy_prices, all_prices, active_symbols, calculation_date
+                    db, group_name, spy_prices, all_prices, active_symbols, market_caps, calculation_date
                 )
                 if metrics:
                     group_metrics.append(metrics)
@@ -156,11 +158,16 @@ class IBDGroupRankService:
         # Fetch prices for all symbols in batch
         prices_dict = self.price_cache.get_many(symbols, period="2y")
 
+        # Market caps for weighted RS
+        market_caps = self._get_market_caps_for_symbols(db, symbols)
+
         # Calculate RS for each symbol
         rs_ratings = []
         top_symbol = None
         top_rs = -1
         rs_above_80_count = 0
+        weighted_sum = 0.0
+        weighted_total = 0.0
 
         for symbol in symbols:
             prices = prices_dict.get(symbol)
@@ -200,6 +207,11 @@ class IBDGroupRankService:
                     if rs_rating >= 80:
                         rs_above_80_count += 1
 
+                    market_cap = market_caps.get(symbol)
+                    if market_cap:
+                        weighted_sum += rs_rating * market_cap
+                        weighted_total += market_cap
+
             except Exception as e:
                 logger.debug(f"Error calculating RS for {symbol}: {e}")
                 continue
@@ -214,11 +226,17 @@ class IBDGroupRankService:
 
         # Calculate average RS
         avg_rs = sum(rs_ratings) / len(rs_ratings)
+        median_rs = statistics.median(rs_ratings)
+        rs_std_dev = statistics.pstdev(rs_ratings) if len(rs_ratings) > 1 else None
+        weighted_avg_rs = (weighted_sum / weighted_total) if weighted_total > 0 else None
 
         return {
             'industry_group': group_name,
             'date': calculation_date,
             'avg_rs_rating': round(avg_rs, 2),
+            'median_rs_rating': round(median_rs, 2),
+            'weighted_avg_rs_rating': round(weighted_avg_rs, 2) if weighted_avg_rs is not None else None,
+            'rs_std_dev': round(rs_std_dev, 2) if rs_std_dev is not None else None,
             'num_stocks': len(rs_ratings),
             'num_stocks_rs_above_80': rs_above_80_count,
             'top_symbol': top_symbol,
@@ -254,6 +272,9 @@ class IBDGroupRankService:
                     existing.num_stocks_rs_above_80 = metrics['num_stocks_rs_above_80']
                     existing.top_symbol = metrics['top_symbol']
                     existing.top_rs_rating = metrics['top_rs_rating']
+                    existing.median_rs_rating = metrics.get('median_rs_rating')
+                    existing.weighted_avg_rs_rating = metrics.get('weighted_avg_rs_rating')
+                    existing.rs_std_dev = metrics.get('rs_std_dev')
                 else:
                     # Insert new record
                     record = IBDGroupRank(
@@ -261,6 +282,9 @@ class IBDGroupRankService:
                         date=calculation_date,
                         rank=metrics['rank'],
                         avg_rs_rating=metrics['avg_rs_rating'],
+                        median_rs_rating=metrics.get('median_rs_rating'),
+                        weighted_avg_rs_rating=metrics.get('weighted_avg_rs_rating'),
+                        rs_std_dev=metrics.get('rs_std_dev'),
                         num_stocks=metrics['num_stocks'],
                         num_stocks_rs_above_80=metrics['num_stocks_rs_above_80'],
                         top_symbol=metrics['top_symbol'],
@@ -317,13 +341,20 @@ class IBDGroupRankService:
         # Build result with rank changes
         result = []
         for ranking in rankings:
+            pct_above_80 = self._calculate_pct_above_80(
+                ranking.num_stocks_rs_above_80, ranking.num_stocks
+            )
             item = {
                 'industry_group': ranking.industry_group,
                 'date': ranking.date.isoformat(),
                 'rank': ranking.rank,
                 'avg_rs_rating': ranking.avg_rs_rating,
+                'median_rs_rating': ranking.median_rs_rating,
+                'weighted_avg_rs_rating': ranking.weighted_avg_rs_rating,
+                'rs_std_dev': ranking.rs_std_dev,
                 'num_stocks': ranking.num_stocks,
                 'num_stocks_rs_above_80': ranking.num_stocks_rs_above_80,
+                'pct_rs_above_80': pct_above_80,
                 'top_symbol': ranking.top_symbol,
                 'top_rs_rating': ranking.top_rs_rating,
             }
@@ -437,11 +468,19 @@ class IBDGroupRankService:
         # Get constituent stocks with metrics
         stocks = self._get_constituent_stocks(db, industry_group)
 
+        pct_above_80 = self._calculate_pct_above_80(
+            current.num_stocks_rs_above_80, current.num_stocks
+        )
+
         return {
             'industry_group': industry_group,
             'current_rank': current.rank,
             'current_avg_rs': current.avg_rs_rating,
+            'current_median_rs': current.median_rs_rating,
+            'current_weighted_avg_rs': current.weighted_avg_rs_rating,
+            'current_rs_std_dev': current.rs_std_dev,
             'num_stocks': current.num_stocks,
+            'pct_rs_above_80': pct_above_80,
             'top_symbol': current.top_symbol,
             'top_rs_rating': current.top_rs_rating,
             **rank_changes,
@@ -582,6 +621,39 @@ class IBDGroupRankService:
         group_symbols = IBDIndustryService.get_group_symbols(db, group_name)
         return [s for s in group_symbols if s in active_symbols]
 
+    def _get_market_caps_for_symbols(
+        self,
+        db: Session,
+        symbols: List[str]
+    ) -> Dict[str, float]:
+        """
+        Fetch market caps for a set of symbols from stock_universe.
+
+        Returns:
+            Dict mapping symbol -> market cap (only positive values included)
+        """
+        if not symbols:
+            return {}
+
+        rows = db.query(StockUniverse.symbol, StockUniverse.market_cap).filter(
+            StockUniverse.symbol.in_(symbols)
+        ).all()
+
+        return {symbol: cap for symbol, cap in rows if cap and cap > 0}
+
+    def _calculate_pct_above_80(
+        self,
+        count_above_80: Optional[int],
+        total_count: Optional[int]
+    ) -> Optional[float]:
+        """
+        Calculate percent of group members with RS >= 80.
+        """
+        if not total_count:
+            return None
+        count = count_above_80 or 0
+        return round((count / total_count) * 100, 1)
+
     def _prefetch_all_data(
         self,
         db: Session
@@ -595,7 +667,7 @@ class IBDGroupRankService:
         3. All prices for all symbols across all groups in a single batch
 
         Returns:
-            Tuple of (spy_prices_df, {symbol: prices_df}, active_symbols_set)
+            Tuple of (spy_prices_df, {symbol: prices_df}, active_symbols_set, {symbol: market_cap})
         """
         from .stock_universe_service import stock_universe_service
 
@@ -631,9 +703,12 @@ class IBDGroupRankService:
         # 4. Batch fetch ALL prices in one call
         all_prices = self.price_cache.get_many(list(symbols_to_fetch), period="2y")
 
+        # 5. Fetch market caps for weighting
+        market_caps = self._get_market_caps_for_symbols(db, list(symbols_to_fetch))
+
         logger.info(f"Pre-fetched prices for {len(all_prices)} symbols")
 
-        return spy_data, all_prices, active_symbols
+        return spy_data, all_prices, active_symbols, market_caps
 
     def _delete_rankings_for_range(
         self,
@@ -672,6 +747,7 @@ class IBDGroupRankService:
         spy_prices: pd.Series,
         all_prices: Dict[str, pd.DataFrame],
         active_symbols: set,
+        market_caps: Dict[str, float],
         calculation_date: date
     ) -> Optional[Dict]:
         """
@@ -702,6 +778,8 @@ class IBDGroupRankService:
         top_symbol = None
         top_rs = -1
         rs_above_80_count = 0
+        weighted_sum = 0.0
+        weighted_total = 0.0
 
         for symbol in symbols:
             prices = all_prices.get(symbol)
@@ -741,6 +819,11 @@ class IBDGroupRankService:
                     if rs_rating >= 80:
                         rs_above_80_count += 1
 
+                    market_cap = market_caps.get(symbol)
+                    if market_cap:
+                        weighted_sum += rs_rating * market_cap
+                        weighted_total += market_cap
+
             except Exception as e:
                 logger.debug(f"Error calculating RS for {symbol}: {e}")
                 continue
@@ -755,11 +838,17 @@ class IBDGroupRankService:
 
         # Calculate average RS
         avg_rs = sum(rs_ratings) / len(rs_ratings)
+        median_rs = statistics.median(rs_ratings)
+        rs_std_dev = statistics.pstdev(rs_ratings) if len(rs_ratings) > 1 else None
+        weighted_avg_rs = (weighted_sum / weighted_total) if weighted_total > 0 else None
 
         return {
             'industry_group': group_name,
             'date': calculation_date,
             'avg_rs_rating': round(avg_rs, 2),
+            'median_rs_rating': round(median_rs, 2),
+            'weighted_avg_rs_rating': round(weighted_avg_rs, 2) if weighted_avg_rs is not None else None,
+            'rs_std_dev': round(rs_std_dev, 2) if rs_std_dev is not None else None,
             'num_stocks': len(rs_ratings),
             'num_stocks_rs_above_80': rs_above_80_count,
             'top_symbol': top_symbol,
@@ -793,7 +882,7 @@ class IBDGroupRankService:
         deleted = self._delete_rankings_for_range(db, start_date, end_date)
 
         # 2. Pre-fetch ALL data upfront
-        spy_data, all_prices, active_symbols = self._prefetch_all_data(db)
+        spy_data, all_prices, active_symbols, market_caps = self._prefetch_all_data(db)
 
         if spy_data is None or spy_data.empty:
             logger.error("Cannot proceed without SPY data")
@@ -842,7 +931,7 @@ class IBDGroupRankService:
                 group_metrics = []
                 for group_name in all_groups:
                     metrics = self._calculate_group_rs_from_cache(
-                        db, group_name, spy_prices, all_prices, active_symbols, calc_date
+                        db, group_name, spy_prices, all_prices, active_symbols, market_caps, calc_date
                     )
                     if metrics:
                         group_metrics.append(metrics)
@@ -1084,7 +1173,7 @@ class IBDGroupRankService:
         start_time = datetime.now()
 
         # Pre-fetch ALL data upfront
-        spy_data, all_prices, active_symbols = self._prefetch_all_data(db)
+        spy_data, all_prices, active_symbols, market_caps = self._prefetch_all_data(db)
 
         if spy_data is None or spy_data.empty:
             logger.error("Cannot proceed without SPY data")
@@ -1120,7 +1209,7 @@ class IBDGroupRankService:
                 group_metrics = []
                 for group_name in all_groups:
                     metrics = self._calculate_group_rs_from_cache(
-                        db, group_name, spy_prices, all_prices, active_symbols, calc_date
+                        db, group_name, spy_prices, all_prices, active_symbols, market_caps, calc_date
                     )
                     if metrics:
                         group_metrics.append(metrics)

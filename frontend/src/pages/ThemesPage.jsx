@@ -30,6 +30,7 @@ import {
   Badge,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
 } from '@mui/material';
 import TrendingFlatIcon from '@mui/icons-material/TrendingFlat';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
@@ -43,7 +44,6 @@ import CloseIcon from '@mui/icons-material/Close';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import TimelineIcon from '@mui/icons-material/Timeline';
-import GroupWorkIcon from '@mui/icons-material/GroupWork';
 import NewReleasesIcon from '@mui/icons-material/NewReleases';
 import ShowChartIcon from '@mui/icons-material/ShowChart';
 import SettingsIcon from '@mui/icons-material/Settings';
@@ -813,13 +813,13 @@ function ThemesPage() {
                   borderBottom={index < 4 ? 1 : 0}
                   borderColor="divider"
                   sx={{ cursor: 'pointer' }}
-                  onClick={() => setSelectedTheme({ id: index + 1, name: theme.theme })}
+                  onClick={() => setSelectedTheme({ id: theme.theme_cluster_id, name: theme.theme })}
                 >
                   <Box display="flex" alignItems="center">
                     <Typography variant="body2" color="text.secondary" sx={{ mr: 1, minWidth: 20 }}>
                       #{theme.rank}
                     </Typography>
-                    <Typography variant="body2" fontWeight="medium">
+                    <Typography variant="body2" fontWeight="medium" sx={{ maxWidth: 200 }} noWrap>
                       {theme.theme}
                     </Typography>
                   </Box>
@@ -1000,8 +1000,34 @@ function ThemesPage() {
                         {row.rank}
                       </Box>
                     </TableCell>
-                    <TableCell sx={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      <Box sx={{ fontWeight: 500 }}>{row.theme}</Box>
+                    <TableCell sx={{ maxWidth: 180, overflow: 'hidden' }}>
+                      <Box display="flex" alignItems="center" gap={0.5} sx={{ minWidth: 0 }}>
+                        <Box
+                          sx={{
+                            fontWeight: 500,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            flex: 1,
+                          }}
+                          title={row.theme}
+                        >
+                          {row.theme}
+                        </Box>
+                        <Tooltip title="View details">
+                          <IconButton
+                            size="small"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedTheme({ id: row.theme_cluster_id, name: row.theme });
+                            }}
+                            sx={{ p: 0.25 }}
+                            aria-label={`View details for ${row.theme}`}
+                          >
+                            <TimelineIcon sx={{ fontSize: 14 }} />
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
                       {row.first_seen && (
                         <Box sx={{ fontSize: '9px', color: 'text.secondary' }}>
                           Since {new Date(row.first_seen).toLocaleDateString()}

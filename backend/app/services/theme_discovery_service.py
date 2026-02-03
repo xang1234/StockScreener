@@ -181,7 +181,8 @@ class ThemeDiscoveryService:
         symbols = [c.symbol for c in constituents]
 
         # Fetch price data for constituents
-        date_lookback = as_of_date - timedelta(days=60)  # Need 60 days for calculations
+        # Use extended lookback so 200-day MA and 1-month correlations have enough data.
+        date_lookback = as_of_date - timedelta(days=260)
 
         prices_query = self.db.query(StockPrice).filter(
             StockPrice.symbol.in_(symbols),
@@ -247,15 +248,21 @@ class ThemeDiscoveryService:
             spy_df["return"] = spy_df["close"].pct_change()
             spy_returns = spy_df.set_index("date")["return"]
         else:
-            spy_returns = pd.Series()
+            spy_returns = pd.Series(dtype=float)
 
-        # Calculate period returns
+        def _compound_return(series: pd.Series, periods: int) -> float:
+            window = series.tail(periods).dropna()
+            if len(window) < periods:
+                return 0
+            return (1 + window).prod() - 1
+
+        # Calculate period returns (compounded)
         basket_return_1d = basket_returns.iloc[-1] if len(basket_returns) > 0 else 0
-        basket_return_1w = basket_returns.tail(5).sum() if len(basket_returns) >= 5 else 0
-        basket_return_1m = basket_returns.tail(21).sum() if len(basket_returns) >= 21 else 0
+        basket_return_1w = _compound_return(basket_returns, 5)
+        basket_return_1m = _compound_return(basket_returns, 21)
 
-        # Calculate RS vs SPY (1-month cumulative)
-        spy_return_1m = spy_returns.tail(21).sum() if len(spy_returns) >= 21 else 0
+        # Calculate RS vs SPY (1-month compounded)
+        spy_return_1m = _compound_return(spy_returns, 21)
         relative_return = basket_return_1m - spy_return_1m
 
         # Convert to RS rating (0-100 scale, 50 = market, 100 = +10% outperformance)
@@ -270,7 +277,8 @@ class ThemeDiscoveryService:
         pct_above_200ma = num_above_200ma / len(current_prices) * 100 if current_prices else 0
 
         # % positive on week
-        weekly_returns = returns_df.tail(5).sum()
+        weekly_window = returns_df.tail(5).fillna(0)
+        weekly_returns = (1 + weekly_window).prod() - 1
         pct_positive_1w = (weekly_returns > 0).sum() / len(weekly_returns) * 100 if len(weekly_returns) > 0 else 0
 
         # Internal correlation (average pairwise)
@@ -745,6 +753,7 @@ class ThemeDiscoveryService:
         # New themes in last 24h
         new_themes = self.db.query(ThemeCluster).filter(
             ThemeCluster.first_seen_at >= day_ago,
+            ThemeCluster.pipeline == self.pipeline,
         ).all()
 
         for theme in new_themes:
@@ -770,13 +779,17 @@ class ThemeDiscoveryService:
                 alerts.append(alert)
 
         # Velocity spikes
-        latest_date = self.db.query(func.max(ThemeMetrics.date)).scalar()
+        latest_date = self.db.query(func.max(ThemeMetrics.date)).filter(
+            ThemeMetrics.pipeline == self.pipeline
+        ).scalar()
         if latest_date:
             velocity_spikes = self.db.query(ThemeMetrics, ThemeCluster).join(
                 ThemeCluster, ThemeMetrics.theme_cluster_id == ThemeCluster.id
             ).filter(
                 ThemeMetrics.date == latest_date,
                 ThemeMetrics.mention_velocity >= 3.0,
+                ThemeMetrics.pipeline == self.pipeline,
+                ThemeCluster.pipeline == self.pipeline,
             ).all()
 
             for metrics, theme in velocity_spikes:

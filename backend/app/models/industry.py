@@ -146,6 +146,9 @@ class IBDGroupRank(Base):
     # Core ranking metrics
     rank = Column(Integer, nullable=False)  # 1 = best, higher = worse
     avg_rs_rating = Column(Float, nullable=False)  # Average RS of all stocks in group
+    median_rs_rating = Column(Float)  # Median RS of stocks in group
+    weighted_avg_rs_rating = Column(Float)  # Market-cap weighted average RS
+    rs_std_dev = Column(Float)  # Dispersion of RS ratings (std dev)
 
     # Composition stats
     num_stocks = Column(Integer, default=0)  # Number of stocks with valid RS

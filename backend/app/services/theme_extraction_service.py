@@ -634,7 +634,8 @@ Example themes for this pipeline: {examples_str}
 
         # Get newly discovered themes
         recent_themes = self.db.query(ThemeCluster).filter(
-            ThemeCluster.first_seen_at >= datetime.utcnow().replace(hour=0, minute=0, second=0)
+            ThemeCluster.first_seen_at >= datetime.utcnow().replace(hour=0, minute=0, second=0),
+            ThemeCluster.pipeline == self.pipeline,
         ).all()
         results["new_themes"] = [t.name for t in recent_themes]
 
@@ -642,7 +643,7 @@ Example themes for this pipeline: {examples_str}
         if results["processed"] > 0:
             try:
                 from .theme_discovery_service import ThemeDiscoveryService
-                discovery_service = ThemeDiscoveryService(self.db)
+                discovery_service = ThemeDiscoveryService(self.db, pipeline=self.pipeline)
                 metrics_result = discovery_service.update_all_theme_metrics()
                 results["metrics_updated"] = metrics_result.get("themes_updated", 0)
                 logger.info(f"Auto-updated metrics for {results['metrics_updated']} themes")
