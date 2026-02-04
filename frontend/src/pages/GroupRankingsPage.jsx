@@ -679,6 +679,33 @@ function GroupRankingsPage() {
                     </TableCell>
                     <TableCell align="right">
                       <TableSortLabel
+                        active={orderBy === 'median_rs_rating'}
+                        direction={orderBy === 'median_rs_rating' ? order : 'asc'}
+                        onClick={() => handleSort('median_rs_rating')}
+                      >
+                        Med RS
+                      </TableSortLabel>
+                    </TableCell>
+                    <TableCell align="right">
+                      <TableSortLabel
+                        active={orderBy === 'weighted_avg_rs_rating'}
+                        direction={orderBy === 'weighted_avg_rs_rating' ? order : 'asc'}
+                        onClick={() => handleSort('weighted_avg_rs_rating')}
+                      >
+                        Wtd RS
+                      </TableSortLabel>
+                    </TableCell>
+                    <TableCell align="right">
+                      <TableSortLabel
+                        active={orderBy === 'rs_std_dev'}
+                        direction={orderBy === 'rs_std_dev' ? order : 'asc'}
+                        onClick={() => handleSort('rs_std_dev')}
+                      >
+                        Disp
+                      </TableSortLabel>
+                    </TableCell>
+                    <TableCell align="right">
+                      <TableSortLabel
                         active={orderBy === 'num_stocks'}
                         direction={orderBy === 'num_stocks' ? order : 'asc'}
                         onClick={() => handleSort('num_stocks')}
@@ -767,6 +794,15 @@ function GroupRankingsPage() {
                         color: row.avg_rs_rating >= 70 ? 'success.main' : row.avg_rs_rating <= 30 ? 'error.main' : 'text.primary'
                       }}>
                         {row.avg_rs_rating?.toFixed(1)}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontFamily: 'monospace' }}>
+                        {row.median_rs_rating != null ? row.median_rs_rating.toFixed(1) : '-'}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontFamily: 'monospace' }}>
+                        {row.weighted_avg_rs_rating != null ? row.weighted_avg_rs_rating.toFixed(1) : '-'}
+                      </TableCell>
+                      <TableCell align="right" sx={{ fontFamily: 'monospace' }}>
+                        {row.rs_std_dev != null ? row.rs_std_dev.toFixed(1) : '-'}
                       </TableCell>
                       <TableCell align="right" sx={{ fontFamily: 'monospace' }}>{row.num_stocks}</TableCell>
                       <TableCell align="right" sx={{ fontFamily: 'monospace' }}>
