@@ -338,6 +338,12 @@ class IBDGroupRankService:
             '6m': 126,  # ~6 months
         }
 
+        # Batch fetch all historical ranks in ONE query instead of 197*4=788 queries
+        group_names = [r.industry_group for r in rankings]
+        historical_ranks = self._get_historical_ranks_batch(
+            db, group_names, latest_date, period_days
+        )
+
         # Build result with rank changes
         result = []
         for ranking in rankings:
@@ -359,10 +365,10 @@ class IBDGroupRankService:
                 'top_rs_rating': ranking.top_rs_rating,
             }
 
-            # Calculate rank changes for each period
-            for period_name, days in period_days.items():
-                historical_rank = self._get_historical_rank(
-                    db, ranking.industry_group, latest_date, days
+            # Get pre-computed historical ranks from batch lookup
+            for period_name in period_days.keys():
+                historical_rank = historical_ranks.get(
+                    (ranking.industry_group, period_name)
                 )
                 if historical_rank is not None:
                     # Positive change means rank improved (moved up)
@@ -374,39 +380,86 @@ class IBDGroupRankService:
 
         return result
 
-    def _get_historical_rank(
+    def _get_historical_ranks_batch(
         self,
         db: Session,
-        industry_group: str,
+        group_names: List[str],
         current_date: date,
-        days_back: int
-    ) -> Optional[int]:
+        period_days: Dict[str, int]
+    ) -> Dict[tuple, int]:
         """
-        Get historical rank for a group.
+        Batch fetch historical ranks for all groups and periods in ONE query.
 
-        Finds the closest ranking record within the specified days back window.
+        This replaces N*M individual queries (N groups × M periods) with a single
+        query, avoiding SQLite file-locking issues under heavy load.
+
+        Args:
+            db: Database session
+            group_names: List of industry group names
+            current_date: Current/latest ranking date
+            period_days: Dict mapping period names to days back
+
+        Returns:
+            Dict mapping (group_name, period_name) -> historical rank
         """
-        target_date = current_date - timedelta(days=days_back)
+        if not group_names or not period_days:
+            return {}
 
-        # Find closest record to target date (within 7-day window)
-        records = db.query(IBDGroupRank).filter(
+        # Calculate date range covering all periods (max period + 7-day buffer)
+        max_days = max(period_days.values())
+        earliest_date = current_date - timedelta(days=max_days + 7)
+
+        # Single query: fetch ALL historical records within the date range
+        all_records = db.query(
+            IBDGroupRank.industry_group,
+            IBDGroupRank.date,
+            IBDGroupRank.rank
+        ).filter(
             and_(
-                IBDGroupRank.industry_group == industry_group,
-                IBDGroupRank.date >= target_date - timedelta(days=7),
-                IBDGroupRank.date <= target_date + timedelta(days=7)
+                IBDGroupRank.industry_group.in_(group_names),
+                IBDGroupRank.date >= earliest_date,
+                IBDGroupRank.date < current_date  # Exclude current date
             )
         ).all()
 
-        if not records:
-            return None
+        # Build lookup: group_name -> list of (date, rank)
+        group_history = {}
+        for record in all_records:
+            if record.industry_group not in group_history:
+                group_history[record.industry_group] = []
+            group_history[record.industry_group].append(
+                (record.date, record.rank)
+            )
 
-        # Pick the closest date to target (prefer earlier date if tied)
-        def _distance_key(record):
-            delta = record.date - target_date
-            return (abs(delta.days), delta.days > 0)
+        # For each group and period, find the closest historical rank
+        result = {}
+        for group_name in group_names:
+            history = group_history.get(group_name, [])
+            if not history:
+                continue
 
-        closest = min(records, key=_distance_key)
-        return closest.rank
+            for period_name, days in period_days.items():
+                target_date = current_date - timedelta(days=days)
+
+                # Filter to records within 7-day window of target
+                candidates = [
+                    (d, r) for d, r in history
+                    if abs((d - target_date).days) <= 7
+                ]
+
+                if not candidates:
+                    continue
+
+                # Pick closest date (prefer earlier if tied)
+                def _distance_key(item):
+                    d, _ = item
+                    delta = d - target_date
+                    return (abs(delta.days), delta.days > 0)
+
+                closest_date, closest_rank = min(candidates, key=_distance_key)
+                result[(group_name, period_name)] = closest_rank
+
+        return result
 
     def get_group_history(
         self,

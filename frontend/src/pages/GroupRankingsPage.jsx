@@ -577,7 +577,7 @@ function GroupRankingsPage() {
         <>
           <Grid container spacing={2}>
             {/* Left Column: Movers */}
-            <Grid item xs={12} md={5}>
+            <Grid item xs={12} md={4}>
               <Paper sx={{ height: '100%' }}>
             <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
               <Tabs value={selectedPeriod} onChange={handlePeriodChange}>
@@ -619,7 +619,7 @@ function GroupRankingsPage() {
             </Grid>
 
             {/* Right Column: Full Rankings Table */}
-            <Grid item xs={12} md={7}>
+            <Grid item xs={12} md={8}>
               <Paper elevation={1} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
             <Box sx={{ p: 1.5, borderBottom: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <Box sx={{ fontSize: '14px', fontWeight: 600 }}>

@@ -117,3 +117,71 @@ export const forceRefreshPriceCache = async ({ symbols = null, refreshAll = fals
   });
   return response.data;
 };
+
+/**
+ * Get cache health status (NEW unified endpoint).
+ *
+ * Uses SPY as a proxy for overall cache health (O(1) check).
+ * Includes warmup metadata for detecting partial failures.
+ *
+ * Returns one of 6 states:
+ * - fresh: Cache is up to date
+ * - updating: Refresh task is currently running
+ * - stuck: Task running but no progress for >30 minutes
+ * - partial: Last warmup incomplete (some symbols failed)
+ * - stale: SPY missing expected trading date
+ * - error: Redis unavailable or other error
+ *
+ * @returns {Promise<Object>} Health status including:
+ *   - status: 'fresh'|'updating'|'stuck'|'partial'|'stale'|'error'
+ *   - spy_last_date: Last date in SPY data
+ *   - expected_date: Date cache should have
+ *   - message: Human-readable explanation
+ *   - can_refresh: Whether refresh is allowed
+ *   - task_running: Task info if updating (includes progress)
+ *   - last_warmup: Warmup metadata (status, count, total)
+ */
+export const getCacheHealth = async () => {
+  const response = await apiClient.get('/v1/cache/health');
+  return response.data;
+};
+
+/**
+ * Trigger smart cache refresh (NEW unified endpoint).
+ *
+ * Replaces the confusing split between triggerPriceRefresh and forceRefreshPriceCache.
+ *
+ * Features:
+ * - Always warms SPY first (required for RS calculations)
+ * - Fetches symbols in market cap order (high cap first)
+ * - Prevents double-refresh (returns existing task info if running)
+ *
+ * @param {string} mode - Refresh mode:
+ *   - 'auto' (default): Refresh all currently cached symbols
+ *   - 'full': Refresh entire universe (~5000 symbols, ~2 hours)
+ * @returns {Promise<Object>} Response with:
+ *   - status: 'queued' or 'already_running'
+ *   - task_id: Celery task ID for tracking
+ *   - message: Human-readable status
+ */
+export const refreshCache = async (mode = 'auto') => {
+  const response = await apiClient.post('/v1/cache/refresh', { mode });
+  return response.data;
+};
+
+/**
+ * Force-cancel a stuck refresh task.
+ *
+ * Use when a task appears stuck (no progress for >30 minutes).
+ * Releases the lock so a new refresh can be started.
+ *
+ * Safety: Won't cancel actively progressing tasks (requires >30 min no heartbeat).
+ *
+ * @returns {Promise<Object>} Response with:
+ *   - status: 'cancelled', 'no_task', or 'active'
+ *   - message: Human-readable status
+ */
+export const forceCancelRefresh = async () => {
+  const response = await apiClient.post('/v1/cache/force-cancel');
+  return response.data;
+};

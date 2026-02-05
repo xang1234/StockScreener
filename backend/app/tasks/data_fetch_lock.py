@@ -129,6 +129,36 @@ class DataFetchLock:
 
         return {'raw': current.decode()}
 
+    def get_current_task(self) -> Optional[Dict[str, Any]]:
+        """
+        Get info about the current running task including progress.
+
+        Enhanced version of get_current_holder that includes heartbeat data.
+
+        Returns:
+            Dict with task_name, task_id, started_at, ttl_seconds, and progress info
+            or None if no task is running
+        """
+        holder = self.get_current_holder()
+        if not holder or 'task_name' not in holder:
+            return None
+
+        # Try to get heartbeat/progress info
+        try:
+            from ..services.price_cache_service import WARMUP_HEARTBEAT_KEY
+            heartbeat_json = self.redis.get(WARMUP_HEARTBEAT_KEY)
+            if heartbeat_json:
+                import json
+                heartbeat = json.loads(heartbeat_json)
+                holder['current'] = heartbeat.get('current')
+                holder['total'] = heartbeat.get('total')
+                holder['progress'] = heartbeat.get('percent')
+                holder['last_heartbeat'] = heartbeat.get('updated_at')
+        except Exception as e:
+            logger.debug(f"Could not get heartbeat for task: {e}")
+
+        return holder
+
     def is_locked(self) -> bool:
         """Check if lock is currently held."""
         return self.redis.exists(LOCK_KEY) > 0

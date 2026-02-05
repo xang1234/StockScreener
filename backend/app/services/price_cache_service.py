@@ -19,10 +19,17 @@ from sqlalchemy.orm import Session
 from ..database import SessionLocal
 from ..models.stock import StockPrice
 from ..config import settings
-from ..utils.market_hours import is_market_open, get_eastern_now, EASTERN, MARKET_CLOSE_TIME
+from ..utils.market_hours import (
+    is_market_open, get_eastern_now, EASTERN, MARKET_CLOSE_TIME,
+    is_trading_day, get_last_trading_day
+)
 from .redis_pool import get_redis_client
 
 logger = logging.getLogger(__name__)
+
+# Redis keys for warmup metadata
+WARMUP_METADATA_KEY = "cache:warmup:metadata"
+WARMUP_HEARTBEAT_KEY = "cache:warmup:heartbeat"
 
 
 class PriceCacheService:
@@ -651,6 +658,367 @@ class PriceCacheService:
             "current_time_et": now_et.strftime("%Y-%m-%d %H:%M:%S ET"),
             "has_stale_data": len(stale_symbols) > 0
         }
+
+    def get_cache_health_status(self) -> Dict:
+        """
+        O(1) cache health check using SPY as proxy.
+
+        Uses SPY benchmark as the health indicator because:
+        1. SPY is always the first thing warmed in every cache refresh
+        2. If SPY is fresh, the warmup task ran successfully
+        3. Single Redis lookup vs scanning thousands of symbols
+
+        Returns 6 possible states:
+        - fresh: Cache is up to date (SPY has expected date + last warmup complete)
+        - updating: Refresh task is currently running
+        - stuck: Task running but no progress for >30 minutes
+        - partial: Last warmup incomplete (some symbols failed)
+        - stale: SPY missing expected trading date
+        - error: Redis unavailable or other error
+
+        Returns:
+            Dict with:
+            - status: "fresh"|"updating"|"stuck"|"partial"|"stale"|"error"
+            - spy_last_date: Last date in SPY data
+            - expected_date: Date cache should have
+            - message: Human-readable explanation
+            - can_refresh: Whether refresh is allowed
+            - task_running: Task info if updating
+            - last_warmup: Warmup metadata if available
+        """
+        try:
+            # Check Redis connectivity
+            if not self._redis_client:
+                return {
+                    "status": "error",
+                    "message": "Cache unavailable - Redis not connected",
+                    "can_refresh": False,
+                    "spy_last_date": None,
+                    "expected_date": None,
+                    "task_running": None,
+                    "last_warmup": None
+                }
+
+            try:
+                self._redis_client.ping()
+            except Exception as e:
+                logger.error(f"Redis ping failed: {e}")
+                return {
+                    "status": "error",
+                    "message": "Cache unavailable - Redis connection failed",
+                    "can_refresh": False,
+                    "spy_last_date": None,
+                    "expected_date": None,
+                    "task_running": None,
+                    "last_warmup": None
+                }
+
+            # Check if a refresh task is currently running
+            from ..tasks.data_fetch_lock import DataFetchLock
+            lock = DataFetchLock.get_instance()
+            current_holder = lock.get_current_holder()
+
+            if current_holder and current_holder.get('task_name'):
+                # Task is running - check if it's stuck
+                minutes_since_heartbeat = self._get_minutes_since_heartbeat()
+
+                if minutes_since_heartbeat is not None and minutes_since_heartbeat > 30:
+                    return {
+                        "status": "stuck",
+                        "message": f"Task appears stuck (no progress for {int(minutes_since_heartbeat)} min)",
+                        "can_refresh": True,  # Allow force cancel
+                        "can_force_cancel": True,
+                        "spy_last_date": None,
+                        "expected_date": None,
+                        "task_running": {
+                            "task_id": current_holder.get('task_id'),
+                            "task_name": current_holder.get('task_name'),
+                            "started_at": current_holder.get('started_at'),
+                            "minutes_since_heartbeat": int(minutes_since_heartbeat) if minutes_since_heartbeat else None
+                        },
+                        "last_warmup": self._get_warmup_metadata()
+                    }
+
+                # Task is actively running
+                return {
+                    "status": "updating",
+                    "message": f"Cache refresh in progress ({current_holder.get('task_name')})",
+                    "can_refresh": False,
+                    "spy_last_date": None,
+                    "expected_date": None,
+                    "task_running": {
+                        "task_id": current_holder.get('task_id'),
+                        "task_name": current_holder.get('task_name'),
+                        "started_at": current_holder.get('started_at'),
+                        **self._get_task_progress()
+                    },
+                    "last_warmup": self._get_warmup_metadata()
+                }
+
+            # No task running - check SPY freshness
+            spy_last_date = self._get_spy_last_date()
+            expected_date = self._get_expected_data_date()
+
+            if spy_last_date is None:
+                return {
+                    "status": "stale",
+                    "message": "SPY benchmark not cached",
+                    "can_refresh": True,
+                    "spy_last_date": None,
+                    "expected_date": str(expected_date) if expected_date else None,
+                    "task_running": None,
+                    "last_warmup": self._get_warmup_metadata()
+                }
+
+            # Check warmup metadata for partial completion
+            warmup_meta = self._get_warmup_metadata()
+            if warmup_meta and warmup_meta.get('status') == 'partial':
+                return {
+                    "status": "partial",
+                    "message": f"Partial refresh: {warmup_meta.get('count', 0)}/{warmup_meta.get('total', 0)} symbols",
+                    "can_refresh": True,
+                    "spy_last_date": str(spy_last_date),
+                    "expected_date": str(expected_date) if expected_date else None,
+                    "task_running": None,
+                    "last_warmup": warmup_meta
+                }
+
+            # Compare SPY date with expected date
+            is_fresh = spy_last_date >= expected_date if expected_date else True
+
+            if is_fresh:
+                return {
+                    "status": "fresh",
+                    "message": "Cache is up to date",
+                    "can_refresh": True,
+                    "spy_last_date": str(spy_last_date),
+                    "expected_date": str(expected_date) if expected_date else None,
+                    "task_running": None,
+                    "last_warmup": warmup_meta
+                }
+            else:
+                return {
+                    "status": "stale",
+                    "message": f"Missing data for {expected_date}",
+                    "can_refresh": True,
+                    "spy_last_date": str(spy_last_date),
+                    "expected_date": str(expected_date),
+                    "task_running": None,
+                    "last_warmup": warmup_meta
+                }
+
+        except Exception as e:
+            logger.error(f"Error in get_cache_health_status: {e}", exc_info=True)
+            return {
+                "status": "error",
+                "message": f"Error checking cache health: {str(e)}",
+                "can_refresh": True,
+                "spy_last_date": None,
+                "expected_date": None,
+                "task_running": None,
+                "last_warmup": None
+            }
+
+    def _get_spy_last_date(self) -> Optional[date]:
+        """
+        Get the last date in SPY benchmark cache.
+
+        Returns:
+            date object of last SPY data, or None if not cached
+        """
+        try:
+            from .benchmark_cache_service import BenchmarkCacheService
+            benchmark_cache = BenchmarkCacheService.get_instance()
+            spy_df = benchmark_cache.get_spy_data(period="2y")
+
+            if spy_df is None or spy_df.empty:
+                return None
+
+            last_date = spy_df.index[-1]
+            if hasattr(last_date, 'date'):
+                return last_date.date()
+            return last_date
+
+        except Exception as e:
+            logger.error(f"Error getting SPY last date: {e}")
+            return None
+
+    def _get_expected_data_date(self) -> Optional[date]:
+        """
+        Calculate the date that cache should have data for.
+
+        Logic:
+        - During market hours: Yesterday's close is sufficient
+        - After 5 PM on trading day: Today's close expected
+        - Before 9:30 AM on trading day: Yesterday's close is fine
+        - Weekend/Holiday: Last trading day before today
+
+        Grace period: Between 4:00-5:00 PM, don't expect today's
+        close yet (data providers may have delay).
+
+        Returns:
+            date that cache should have
+        """
+        now_et = get_eastern_now()
+        today = now_et.date()
+
+        if is_market_open(now_et):
+            # During market hours: yesterday's close is sufficient
+            # (intraday data is a bonus, not required)
+            return get_last_trading_day(today - timedelta(days=1))
+
+        if is_trading_day(today):
+            if now_et.hour >= 17:
+                # After 5 PM on trading day: expect today's close
+                return today
+            elif now_et.hour >= 16:
+                # Grace period 4-5 PM: yesterday's close is acceptable
+                # Data providers may not have final close until ~4:30 PM
+                return get_last_trading_day(today - timedelta(days=1))
+            else:
+                # Before market open (e.g., 7 AM Monday)
+                # Yesterday's close (or Friday's if Monday) is fine
+                return get_last_trading_day(today - timedelta(days=1))
+
+        # Weekend or holiday: last trading day before today
+        return get_last_trading_day(today - timedelta(days=1))
+
+    def _get_warmup_metadata(self) -> Optional[Dict]:
+        """
+        Get metadata from the last warmup operation.
+
+        Returns:
+            Dict with status, count, total, completed_at or None
+        """
+        if not self._redis_client:
+            return None
+
+        try:
+            meta_json = self._redis_client.get(WARMUP_METADATA_KEY)
+            if meta_json:
+                return json.loads(meta_json)
+            return None
+        except Exception as e:
+            logger.error(f"Error getting warmup metadata: {e}")
+            return None
+
+    def save_warmup_metadata(self, status: str, count: int, total: int, error: str = None) -> None:
+        """
+        Save warmup operation metadata.
+
+        Args:
+            status: "completed", "partial", or "failed"
+            count: Number of symbols successfully processed
+            total: Total number of symbols attempted
+            error: Error message if failed
+        """
+        if not self._redis_client:
+            return
+
+        try:
+            meta = {
+                "status": status,
+                "count": count,
+                "total": total,
+                "completed_at": datetime.now().isoformat(),
+                "error": error
+            }
+            self._redis_client.setex(
+                WARMUP_METADATA_KEY,
+                86400 * 7,  # 7 days TTL
+                json.dumps(meta)
+            )
+            logger.info(f"Saved warmup metadata: {status} ({count}/{total})")
+        except Exception as e:
+            logger.error(f"Error saving warmup metadata: {e}")
+
+    def update_warmup_heartbeat(self, current: int, total: int, percent: float = None) -> None:
+        """
+        Update heartbeat during warmup operation.
+
+        Called periodically to indicate task is still making progress.
+        Used for stuck detection.
+
+        Args:
+            current: Current symbol index
+            total: Total symbols to process
+            percent: Optional percentage complete
+        """
+        if not self._redis_client:
+            return
+
+        try:
+            heartbeat = {
+                "current": current,
+                "total": total,
+                "percent": percent or round((current / total) * 100, 1) if total > 0 else 0,
+                "updated_at": datetime.now().isoformat()
+            }
+            self._redis_client.setex(
+                WARMUP_HEARTBEAT_KEY,
+                3600,  # 1 hour TTL
+                json.dumps(heartbeat)
+            )
+        except Exception as e:
+            logger.error(f"Error updating warmup heartbeat: {e}")
+
+    def _get_minutes_since_heartbeat(self) -> Optional[float]:
+        """
+        Get minutes since last heartbeat update.
+
+        Returns:
+            Minutes since last heartbeat, or None if no heartbeat found
+        """
+        if not self._redis_client:
+            return None
+
+        try:
+            heartbeat_json = self._redis_client.get(WARMUP_HEARTBEAT_KEY)
+            if not heartbeat_json:
+                return None
+
+            heartbeat = json.loads(heartbeat_json)
+            updated_at = datetime.fromisoformat(heartbeat.get('updated_at', ''))
+            minutes = (datetime.now() - updated_at).total_seconds() / 60
+            return minutes
+        except Exception as e:
+            logger.error(f"Error getting heartbeat: {e}")
+            return None
+
+    def _get_task_progress(self) -> Dict:
+        """
+        Get current task progress from heartbeat.
+
+        Returns:
+            Dict with current, total, percent or empty dict
+        """
+        if not self._redis_client:
+            return {}
+
+        try:
+            heartbeat_json = self._redis_client.get(WARMUP_HEARTBEAT_KEY)
+            if not heartbeat_json:
+                return {}
+
+            heartbeat = json.loads(heartbeat_json)
+            return {
+                "current": heartbeat.get('current'),
+                "total": heartbeat.get('total'),
+                "progress": heartbeat.get('percent')
+            }
+        except Exception as e:
+            logger.error(f"Error getting task progress: {e}")
+            return {}
+
+    def clear_warmup_heartbeat(self) -> None:
+        """Clear the warmup heartbeat (called after task completes)."""
+        if not self._redis_client:
+            return
+
+        try:
+            self._redis_client.delete(WARMUP_HEARTBEAT_KEY)
+        except Exception as e:
+            logger.error(f"Error clearing warmup heartbeat: {e}")
 
     def clear_fetch_metadata(self, symbol: str) -> None:
         """

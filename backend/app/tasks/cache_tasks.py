@@ -699,6 +699,199 @@ def auto_refresh_after_close(self):
     return result
 
 
+@celery_app.task(bind=True, name='app.tasks.cache_tasks.smart_refresh_cache')
+@serialized_data_fetch('smart_refresh_cache')
+def smart_refresh_cache(self, mode: str = "auto"):
+    """
+    Smart cache refresh with market cap prioritization.
+
+    This is the unified refresh task that replaces the confusing split
+    between daily_cache_warmup and force_refresh_stale_intraday.
+
+    Key features:
+    1. Always warms SPY first (required for RS calculations)
+    2. Fetches symbols in market cap order (high cap first)
+    3. Updates heartbeat for stuck detection
+    4. Saves warmup metadata for partial completion tracking
+
+    Args:
+        mode: Refresh mode
+            - "auto": SPY + all currently cached symbols (quick refresh)
+            - "full": SPY + entire universe (~5000 symbols, ~2 hours)
+
+    Returns:
+        Dict with refresh statistics
+    """
+    import time
+    from ..services.price_cache_service import PriceCacheService
+    from ..services.bulk_data_fetcher import BulkDataFetcher
+    from ..models.stock_universe import StockUniverse
+
+    logger.info("=" * 80)
+    logger.info(f"TASK: Smart Cache Refresh (mode={mode})")
+    logger.info(f"Market status: {format_market_status()}")
+    logger.info(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("=" * 80)
+
+    price_cache = PriceCacheService.get_instance()
+    bulk_fetcher = BulkDataFetcher()
+    db = SessionLocal()
+
+    refreshed = 0
+    failed = 0
+    failed_symbols = []
+
+    try:
+        # Step 1: Always warm SPY first (required for RS calculations)
+        logger.info("[1/3] Warming SPY benchmark...")
+        spy_result = warm_spy_cache()
+        if spy_result.get('error'):
+            logger.error(f"SPY warmup failed: {spy_result.get('error')}")
+
+        # Step 2: Get symbols to refresh, ordered by market cap
+        logger.info(f"[2/3] Determining symbols to refresh (mode={mode})...")
+
+        if mode == "full":
+            # Full refresh: ALL active symbols, ordered by market cap DESC
+            symbols = [
+                r.symbol for r in db.query(StockUniverse.symbol)
+                .filter(StockUniverse.is_active == True)
+                .order_by(StockUniverse.market_cap.desc().nullslast())
+                .all()
+            ]
+            logger.info(f"Full refresh: {len(symbols)} symbols (market cap order)")
+        else:
+            # Auto mode: Only cached symbols (fast refresh of existing data)
+            all_cached = price_cache.get_all_cached_symbols()
+            if all_cached:
+                # Sort by market cap
+                cap_order = {
+                    r.symbol: r.market_cap or 0
+                    for r in db.query(StockUniverse.symbol, StockUniverse.market_cap)
+                    .filter(StockUniverse.symbol.in_(all_cached))
+                    .all()
+                }
+                symbols = sorted(all_cached, key=lambda s: cap_order.get(s, 0), reverse=True)
+                logger.info(f"Auto refresh: {len(symbols)} cached symbols (market cap order)")
+            else:
+                symbols = []
+                logger.info("Auto refresh: No cached symbols found")
+
+        if not symbols:
+            price_cache.save_warmup_metadata("completed", 0, 0)
+            return {
+                "status": "completed",
+                "refreshed": 0,
+                "failed": 0,
+                "total": 0,
+                "message": "No symbols to refresh - cache is empty",
+                "mode": mode,
+                "completed_at": datetime.now().isoformat()
+            }
+
+        total = len(symbols)
+
+        # Step 3: Batch fetch with progress tracking
+        logger.info(f"[3/3] Fetching {total} symbols...")
+
+        batch_size = 100
+        rate_limit_delay = 2.0  # seconds between batches
+
+        for batch_start in range(0, total, batch_size):
+            batch_symbols = symbols[batch_start:batch_start + batch_size]
+            batch_num = (batch_start // batch_size) + 1
+            total_batches = (total + batch_size - 1) // batch_size
+
+            logger.info(f"Batch {batch_num}/{total_batches}: Fetching {len(batch_symbols)} symbols")
+
+            try:
+                # Batch fetch using yfinance.Tickers() with rate limit backoff
+                batch_results = _fetch_with_backoff(bulk_fetcher, batch_symbols, period="2y")
+
+                # Process results and store in cache
+                for symbol, data in batch_results.items():
+                    if not data.get('has_error') and data.get('price_data') is not None:
+                        price_df = data['price_data']
+                        if not price_df.empty:
+                            price_cache.store_in_cache(symbol, price_df, also_store_db=True)
+                            refreshed += 1
+                        else:
+                            failed += 1
+                            failed_symbols.append(symbol)
+                    else:
+                        failed += 1
+                        failed_symbols.append(symbol)
+
+            except Exception as e:
+                logger.error(f"Batch {batch_num} error: {e}")
+                failed += len(batch_symbols)
+                failed_symbols.extend(batch_symbols)
+
+            # Update progress for UI and stuck detection
+            progress = min((batch_start + batch_size), total)
+            percent = (progress / total) * 100
+
+            # Update Celery task state
+            self.update_state(
+                state='PROGRESS',
+                meta={
+                    'current': progress,
+                    'total': total,
+                    'percent': percent,
+                    'refreshed': refreshed,
+                    'failed': failed
+                }
+            )
+
+            # Update heartbeat for stuck detection
+            price_cache.update_warmup_heartbeat(progress, total, percent)
+
+            # Rate limit between batches
+            if batch_start + batch_size < total:
+                time.sleep(rate_limit_delay)
+
+        # Save final warmup metadata
+        status = "completed" if failed == 0 else "partial"
+        price_cache.save_warmup_metadata(status, refreshed, total)
+        price_cache.clear_warmup_heartbeat()
+
+        logger.info("=" * 80)
+        logger.info(f"✓ Smart refresh completed ({mode} mode):")
+        logger.info(f"  Refreshed: {refreshed}")
+        logger.info(f"  Failed: {failed}")
+        logger.info(f"  Total: {total}")
+        if failed_symbols:
+            logger.info(f"  Failed symbols: {failed_symbols[:10]}...")
+        logger.info("=" * 80)
+
+        return {
+            "status": status,
+            "refreshed": refreshed,
+            "failed": failed,
+            "total": total,
+            "failed_symbols": failed_symbols[:20],
+            "mode": mode,
+            "completed_at": datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error in smart_refresh_cache task: {e}", exc_info=True)
+        # Save partial progress
+        price_cache.save_warmup_metadata("failed", refreshed, total if 'total' in dir() else 0, str(e))
+        price_cache.clear_warmup_heartbeat()
+        return {
+            "status": "failed",
+            "error": str(e),
+            "refreshed": refreshed,
+            "failed": failed,
+            "mode": mode,
+            "timestamp": datetime.now().isoformat()
+        }
+
+    finally:
+        db.close()
+
+
 @celery_app.task(bind=True, name='app.tasks.cache_tasks.cleanup_old_price_data')
 def cleanup_old_price_data(self, keep_years: int = 5):
     """

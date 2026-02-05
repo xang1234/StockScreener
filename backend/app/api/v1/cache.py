@@ -6,9 +6,11 @@ Provides endpoints for:
 - Triggering cache warming
 - Invalidating caches
 - Monitoring cache performance
+- Cache health status (new unified endpoint)
+- Smart refresh (new unified endpoint)
 """
 from fastapi import APIRouter, HTTPException, BackgroundTasks
-from typing import Optional, List
+from typing import Optional, List, Literal
 from pydantic import BaseModel
 
 from ...services.cache_manager import CacheManager
@@ -18,8 +20,10 @@ from ...tasks.cache_tasks import (
     daily_cache_warmup,
     invalidate_cache as invalidate_cache_task,
     get_cache_stats as get_cache_stats_task,
-    force_refresh_stale_intraday
+    force_refresh_stale_intraday,
+    smart_refresh_cache
 )
+from ...tasks.data_fetch_lock import DataFetchLock
 from ...services.price_cache_service import PriceCacheService
 from ...utils.market_hours import format_market_status, is_market_open
 from ...database import SessionLocal
@@ -78,6 +82,30 @@ class ForceRefreshRequest(BaseModel):
     """Request model for force refresh."""
     symbols: Optional[List[str]] = None  # None means refresh all stale symbols
     refresh_all: bool = False  # True = refresh ALL cached symbols, not just stale ones
+
+
+class SmartRefreshRequest(BaseModel):
+    """Request model for smart refresh."""
+    mode: Literal["auto", "full"] = "auto"
+
+
+class CacheHealthResponse(BaseModel):
+    """Cache health status response model."""
+    status: str  # fresh, updating, stuck, partial, stale, error
+    spy_last_date: Optional[str] = None
+    expected_date: Optional[str] = None
+    message: str
+    can_refresh: bool
+    can_force_cancel: Optional[bool] = None
+    task_running: Optional[dict] = None
+    last_warmup: Optional[dict] = None
+
+
+class SmartRefreshResponse(BaseModel):
+    """Smart refresh response model."""
+    status: str  # queued, already_running
+    task_id: Optional[str] = None
+    message: str
 
 
 # Endpoints
@@ -383,6 +411,143 @@ async def get_symbol_cache_info(symbol: str):
         raise HTTPException(
             status_code=500,
             detail=f"Error fetching cache info for {symbol}: {str(e)}"
+        )
+
+
+@router.get("/health", response_model=CacheHealthResponse)
+async def get_cache_health():
+    """
+    Get cache health status with unified state indicator.
+
+    This is the NEW primary endpoint for cache status. It uses SPY as a proxy
+    for overall cache health (O(1) check) and includes warmup metadata for
+    detecting partial failures.
+
+    Returns one of 6 states:
+    - fresh: Cache is up to date (SPY has expected date + last warmup complete)
+    - updating: Refresh task is currently running
+    - stuck: Task running but no progress for >30 minutes
+    - partial: Last warmup incomplete (some symbols failed)
+    - stale: SPY missing expected trading date
+    - error: Redis unavailable or other error
+
+    Returns:
+        CacheHealthResponse with status, dates, message, and task info
+    """
+    try:
+        price_cache = PriceCacheService.get_instance()
+        health = price_cache.get_cache_health_status()
+        return CacheHealthResponse(**health)
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error checking cache health: {str(e)}"
+        )
+
+
+@router.post("/refresh", response_model=SmartRefreshResponse)
+async def smart_refresh(request: SmartRefreshRequest):
+    """
+    Trigger smart cache refresh with prioritized fetching.
+
+    This is the NEW unified refresh endpoint that replaces the confusing
+    split between /warm/all and /force-refresh.
+
+    Modes:
+    - auto (default): Refresh all currently cached symbols
+    - full: Refresh entire universe (~5000 symbols, takes ~2 hours)
+
+    Key features:
+    - Always warms SPY first (required for RS calculations)
+    - Fetches symbols in market cap order (high cap first)
+    - Prevents double-refresh (returns existing task info if running)
+
+    Returns:
+        SmartRefreshResponse with status and task_id
+    """
+    try:
+        # Check if task is already running
+        lock = DataFetchLock.get_instance()
+        running = lock.get_current_task()
+
+        if running:
+            return SmartRefreshResponse(
+                status="already_running",
+                task_id=running.get("task_id"),
+                message=f"Refresh already in progress ({running.get('task_name')})"
+            )
+
+        # Queue smart refresh task
+        task = smart_refresh_cache.delay(mode=request.mode)
+
+        mode_desc = "cached symbols" if request.mode == "auto" else "entire universe (~2 hours)"
+        return SmartRefreshResponse(
+            status="queued",
+            task_id=task.id,
+            message=f"Smart refresh started for {mode_desc}"
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error queuing smart refresh: {str(e)}"
+        )
+
+
+@router.post("/force-cancel")
+async def force_cancel_refresh():
+    """
+    Force-cancel a stuck refresh task.
+
+    Use this when a task appears stuck (no progress for >30 minutes).
+    Releases the lock so a new refresh can be started.
+
+    Safety checks:
+    - Requires task to have no heartbeat update for >30 minutes
+    - Won't cancel actively progressing tasks
+
+    Returns:
+        Status and message
+    """
+    try:
+        lock = DataFetchLock.get_instance()
+        running = lock.get_current_task()
+
+        if not running:
+            return {
+                "status": "no_task",
+                "message": "No task is currently running"
+            }
+
+        # Check if task is actually stuck
+        price_cache = PriceCacheService.get_instance()
+        minutes = price_cache._get_minutes_since_heartbeat()
+
+        if minutes is not None and minutes < 30:
+            return {
+                "status": "active",
+                "message": f"Task is active (last progress {int(minutes)} min ago). Cannot cancel.",
+                "task_id": running.get("task_id"),
+                "task_name": running.get("task_name")
+            }
+
+        # Force release the lock
+        lock.force_release()
+
+        # Clear heartbeat
+        price_cache.clear_warmup_heartbeat()
+
+        return {
+            "status": "cancelled",
+            "message": f"Task {running.get('task_name')} force-cancelled",
+            "task_id": running.get("task_id")
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error force-cancelling task: {str(e)}"
         )
 
 

@@ -4,17 +4,18 @@
  * Displays cache health status for fundamentals and price data.
  * Provides manual refresh buttons to trigger cache warmup tasks.
  *
+ * REFACTORED: Now uses unified cache health endpoint with 6 states.
+ *
  * Features:
- * - Auto-refresh stats every 60 seconds
+ * - Auto-refresh stats every 60 seconds (5s during updates)
  * - Relative time display ("2 hours ago")
  * - Color-coded freshness indicators
- * - Manual refresh buttons with loading states
+ * - Dropdown menu for Full Refresh option
+ * - Completion notification when task finishes
  * - Confirmation dialog for expensive operations
- * - Success/error notifications
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-  Button,
   Chip,
   CircularProgress,
   Box,
@@ -26,20 +27,27 @@ import {
   DialogActions,
   Snackbar,
   Alert,
-  IconButton
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+  Button
 } from '@mui/material';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getCacheStats,
   triggerFundamentalsRefresh,
-  triggerPriceRefresh,
-  getStalenessStatus,
-  forceRefreshPriceCache
+  getCacheHealth,
+  refreshCache,
+  forceCancelRefresh
 } from '../../api/cache';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import WarningIcon from '@mui/icons-material/Warning';
 import ErrorIcon from '@mui/icons-material/Error';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import CancelIcon from '@mui/icons-material/Cancel';
+import UpdateIcon from '@mui/icons-material/Update';
+import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 
 /**
  * Calculate relative time string from ISO timestamp.
@@ -96,35 +104,85 @@ const getFundamentalsFreshness = (lastUpdate) => {
 };
 
 /**
- * Get freshness status and color for price cache.
- * - Green (Fresh): < 1 day
- * - Yellow (Stale): 1-2 days
- * - Red (Very Stale): > 2 days
+ * Get chip props (icon, label, color) based on cache health status.
+ *
+ * 6 states:
+ * - fresh: Cache is up to date
+ * - updating: Refresh task is running
+ * - stuck: Task running but no progress
+ * - partial: Last warmup incomplete
+ * - stale: Missing expected trading date
+ * - error: Redis unavailable
  */
-const getPriceFreshness = (lastUpdate) => {
-  if (!lastUpdate || lastUpdate === 'Never' || lastUpdate === 'N/A') {
-    return { status: 'No Data', color: 'error', icon: <ErrorIcon /> };
+const getCacheChipProps = (health) => {
+  if (!health) {
+    return {
+      icon: <ErrorIcon />,
+      label: 'Cache',
+      color: 'default',
+      tooltip: 'Loading cache status...'
+    };
   }
 
-  try {
-    const date = new Date(lastUpdate);
-    const now = new Date();
-    const diffDays = Math.floor((now - date) / 86400000);
-
-    if (diffDays < 1) {
-      return { status: 'Fresh', color: 'success', icon: <CheckCircleIcon /> };
-    } else if (diffDays <= 2) {
-      return { status: 'Stale', color: 'warning', icon: <WarningIcon /> };
-    } else {
-      return { status: 'Very Stale', color: 'error', icon: <ErrorIcon /> };
-    }
-  } catch (error) {
-    return { status: 'Error', color: 'error', icon: <ErrorIcon /> };
+  switch (health.status) {
+    case 'fresh':
+      return {
+        icon: <CheckCircleIcon />,
+        label: 'Cache',
+        color: 'success',
+        tooltip: `Cache up to date (${health.spy_last_date || 'SPY cached'})`
+      };
+    case 'updating':
+      const progress = health.task_running?.progress;
+      return {
+        icon: <CircularProgress size={10} sx={{ color: 'white' }} />,
+        label: progress ? `${Math.round(progress)}%` : 'Updating',
+        color: 'info',
+        tooltip: health.message
+      };
+    case 'stuck':
+      return {
+        icon: <WarningIcon />,
+        label: 'Stuck',
+        color: 'warning',
+        tooltip: health.message
+      };
+    case 'partial':
+      return {
+        icon: <WarningIcon />,
+        label: 'Partial',
+        color: 'warning',
+        tooltip: health.message
+      };
+    case 'stale':
+      return {
+        icon: <WarningIcon />,
+        label: 'Stale',
+        color: 'warning',
+        tooltip: health.message
+      };
+    case 'error':
+      return {
+        icon: <ErrorIcon />,
+        label: 'Error',
+        color: 'error',
+        tooltip: health.message
+      };
+    default:
+      return {
+        icon: <WarningIcon />,
+        label: 'Unknown',
+        color: 'default',
+        tooltip: 'Unknown cache status'
+      };
   }
 };
 
 export default function CacheStatus() {
   const queryClient = useQueryClient();
+
+  // State for dropdown menu
+  const [menuAnchorEl, setMenuAnchorEl] = useState(null);
 
   // State for confirmation dialog
   const [confirmDialog, setConfirmDialog] = useState({
@@ -139,23 +197,44 @@ export default function CacheStatus() {
     severity: 'success'
   });
 
-  // Query cache stats every 60 seconds
-  const { data: stats, isLoading, error } = useQuery({
+  // Track previous status for completion detection
+  const prevStatusRef = useRef(null);
+
+  // Query cache stats for fundamentals (every 60 seconds)
+  const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ['cacheStats'],
     queryFn: getCacheStats,
-    refetchInterval: 60000, // 60 seconds
-    staleTime: 30000, // 30 seconds
+    refetchInterval: 60000,
+    staleTime: 30000,
     retry: 2
   });
 
-  // Query staleness status every 60 seconds
-  const { data: stalenessStatus } = useQuery({
-    queryKey: ['stalenessStatus'],
-    queryFn: getStalenessStatus,
-    refetchInterval: 60000, // 60 seconds
-    staleTime: 30000, // 30 seconds
+  // Query cache health status (NEW unified endpoint)
+  // Dynamic polling: 5s during updates, 60s otherwise
+  const { data: health, isLoading: healthLoading, error: healthError } = useQuery({
+    queryKey: ['cacheHealth'],
+    queryFn: getCacheHealth,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === 'updating' ? 5000 : 60000;
+    },
+    staleTime: 3000,
     retry: 2
   });
+
+  // Detect when refresh completes and show notification
+  useEffect(() => {
+    if (prevStatusRef.current === 'updating' && health?.status === 'fresh') {
+      setNotification({
+        open: true,
+        message: 'Cache refresh completed successfully',
+        severity: 'success'
+      });
+      // Refresh the stats too
+      queryClient.invalidateQueries(['cacheStats']);
+    }
+    prevStatusRef.current = health?.status;
+  }, [health?.status, queryClient]);
 
   // Mutation for fundamental refresh
   const fundamentalsMutation = useMutation({
@@ -163,7 +242,7 @@ export default function CacheStatus() {
     onSuccess: (data) => {
       setNotification({
         open: true,
-        message: `Fundamentals refresh started`,
+        message: 'Fundamentals refresh started',
         severity: 'success'
       });
       setConfirmDialog({ open: false, type: null });
@@ -179,48 +258,26 @@ export default function CacheStatus() {
     }
   });
 
-  // Mutation for price refresh
-  const priceMutation = useMutation({
-    mutationFn: triggerPriceRefresh,
+  // Mutation for smart refresh (NEW)
+  const refreshMutation = useMutation({
+    mutationFn: (mode) => refreshCache(mode),
     onSuccess: (data) => {
-      setNotification({
-        open: true,
-        message: `Price refresh started`,
-        severity: 'success'
-      });
-      setTimeout(() => queryClient.invalidateQueries(['cacheStats']), 5000);
-    },
-    onError: (error) => {
-      setNotification({
-        open: true,
-        message: `Error: ${error.message}`,
-        severity: 'error'
-      });
-    }
-  });
-
-  // Mutation for force refresh stale intraday data
-  const forceRefreshMutation = useMutation({
-    mutationFn: (refreshAll = false) => forceRefreshPriceCache({ refreshAll }),
-    onSuccess: (data) => {
-      if (data.status === 'skipped') {
+      if (data.status === 'already_running') {
         setNotification({
           open: true,
-          message: data.message || 'No data to refresh',
+          message: data.message || 'Refresh already in progress',
           severity: 'info'
         });
       } else {
         setNotification({
           open: true,
-          message: data.message || 'Refreshing price data...',
+          message: data.message || 'Cache refresh started',
           severity: 'success'
         });
       }
-      // Refresh staleness status after a delay
-      setTimeout(() => {
-        queryClient.invalidateQueries(['stalenessStatus']);
-        queryClient.invalidateQueries(['cacheStats']);
-      }, 5000);
+      setMenuAnchorEl(null);
+      // Immediately invalidate to show "updating" state
+      queryClient.invalidateQueries(['cacheHealth']);
     },
     onError: (error) => {
       setNotification({
@@ -228,23 +285,94 @@ export default function CacheStatus() {
         message: `Error: ${error.message}`,
         severity: 'error'
       });
+      setMenuAnchorEl(null);
     }
   });
 
-  // Handle refresh button clicks
-  const handleRefreshClick = (type, e) => {
-    e.stopPropagation();
-    if (type === 'fundamentals') {
-      setConfirmDialog({ open: true, type: 'fundamentals' });
-    } else {
-      priceMutation.mutate();
+  // Mutation for force cancel
+  const cancelMutation = useMutation({
+    mutationFn: forceCancelRefresh,
+    onSuccess: (data) => {
+      if (data.status === 'cancelled') {
+        setNotification({
+          open: true,
+          message: data.message || 'Task cancelled',
+          severity: 'success'
+        });
+      } else {
+        setNotification({
+          open: true,
+          message: data.message,
+          severity: 'info'
+        });
+      }
+      setMenuAnchorEl(null);
+      queryClient.invalidateQueries(['cacheHealth']);
+    },
+    onError: (error) => {
+      setNotification({
+        open: true,
+        message: `Error: ${error.message}`,
+        severity: 'error'
+      });
+      setMenuAnchorEl(null);
     }
+  });
+
+  // Handle cache chip click
+  const handleCacheChipClick = (event) => {
+    // If stale/partial, directly trigger auto refresh
+    if (health?.status === 'stale' || health?.status === 'partial') {
+      refreshMutation.mutate('auto');
+    } else if (health?.status === 'fresh' || health?.status === 'error') {
+      // For fresh/error, open menu for options
+      setMenuAnchorEl(event.currentTarget);
+    }
+    // For updating/stuck, do nothing on chip click
   };
 
+  // Handle menu open (dropdown arrow or right-click)
+  const handleMenuOpen = (event) => {
+    event.stopPropagation();
+    setMenuAnchorEl(event.currentTarget);
+  };
+
+  // Handle menu close
+  const handleMenuClose = () => {
+    setMenuAnchorEl(null);
+  };
+
+  // Handle auto refresh
+  const handleAutoRefresh = () => {
+    refreshMutation.mutate('auto');
+    handleMenuClose();
+  };
+
+  // Handle full refresh (with confirmation for long operation)
+  const handleFullRefresh = () => {
+    setConfirmDialog({ open: true, type: 'full' });
+    handleMenuClose();
+  };
+
+  // Handle force cancel
+  const handleForceCancel = () => {
+    cancelMutation.mutate();
+  };
+
+  // Handle fundamentals refresh click
+  const handleFundamentalsClick = (e) => {
+    e.stopPropagation();
+    setConfirmDialog({ open: true, type: 'fundamentals' });
+  };
+
+  // Handle confirmation dialog
   const handleConfirm = () => {
     if (confirmDialog.type === 'fundamentals') {
       fundamentalsMutation.mutate();
+    } else if (confirmDialog.type === 'full') {
+      refreshMutation.mutate('full');
     }
+    setConfirmDialog({ open: false, type: null });
   };
 
   const handleCancel = () => {
@@ -255,13 +383,13 @@ export default function CacheStatus() {
     setNotification({ ...notification, open: false });
   };
 
-  // Loading state - show minimal loading
-  if (isLoading) {
+  // Loading state
+  if (statsLoading && healthLoading) {
     return <CircularProgress size={16} />;
   }
 
-  // Error state - show error chip
-  if (error) {
+  // Error state
+  if (healthError) {
     return (
       <Tooltip title="Cache error" arrow>
         <Chip icon={<ErrorIcon />} label="Cache" color="error" size="small" sx={{ height: 20, fontSize: '10px' }} />
@@ -271,70 +399,17 @@ export default function CacheStatus() {
 
   // Extract data
   const fundamentals = stats?.fundamentals || {};
-  const prices = stats?.prices || {};
-  const hasStaleIntraday = stalenessStatus?.has_stale_data || false;
-  const staleCount = stalenessStatus?.stale_intraday_count || 0;
-
   const fundamentalsFreshness = getFundamentalsFreshness(fundamentals.last_update);
-  const priceFreshness = getPriceFreshness(prices.spy_last_update);
+  const cacheProps = getCacheChipProps(health);
 
-  // Handle stale intraday refresh click (only stale symbols)
-  const handleStaleRefresh = (e) => {
-    e.stopPropagation();
-    forceRefreshMutation.mutate(false); // refreshAll = false
-  };
-
-  // Handle force refresh ALL click
-  const handleForceRefreshAll = (e) => {
-    e.stopPropagation();
-    forceRefreshMutation.mutate(true); // refreshAll = true
-  };
+  // Determine if menu should show force cancel
+  const canForceCancel = health?.status === 'stuck' || health?.can_force_cancel;
 
   return (
     <>
       {/* Compact inline cache indicators */}
       <Box sx={{ display: 'flex', gap: 0.5, alignItems: 'center' }}>
-        {/* Stale Intraday Data Warning - only shows when stale data exists */}
-        {hasStaleIntraday && (
-          <Tooltip
-            title={
-              <Box sx={{ fontSize: '11px' }}>
-                <Box sx={{ fontWeight: 600, mb: 0.5, color: '#ff9800' }}>Stale Intraday Data Detected</Box>
-                <Box>{staleCount} symbols have data fetched during market hours</Box>
-                <Box>that is now outdated (market has closed).</Box>
-                <Box sx={{ mt: 0.5 }}>
-                  Symbols: {stalenessStatus?.stale_symbols?.slice(0, 5).join(', ')}
-                  {staleCount > 5 ? '...' : ''}
-                </Box>
-                <Box sx={{ mt: 0.5, fontStyle: 'italic', fontWeight: 500 }}>
-                  Click to refresh with closing prices
-                </Box>
-              </Box>
-            }
-            arrow
-          >
-            <Chip
-              icon={forceRefreshMutation.isPending ? <CircularProgress size={10} /> : <WarningIcon />}
-              label={`Stale (${staleCount})`}
-              color="warning"
-              size="small"
-              onClick={handleStaleRefresh}
-              sx={{
-                height: 20,
-                fontSize: '10px',
-                cursor: 'pointer',
-                '& .MuiChip-icon': { fontSize: 12 },
-                animation: 'pulse 2s infinite',
-                '@keyframes pulse': {
-                  '0%': { opacity: 1 },
-                  '50%': { opacity: 0.7 },
-                  '100%': { opacity: 1 }
-                }
-              }}
-            />
-          </Tooltip>
-        )}
-
+        {/* Fundamentals Chip (unchanged) */}
         <Tooltip
           title={
             <Box sx={{ fontSize: '11px' }}>
@@ -351,74 +426,135 @@ export default function CacheStatus() {
             label="Fund"
             color={fundamentalsFreshness.color}
             size="small"
-            onClick={(e) => handleRefreshClick('fundamentals', e)}
+            onClick={handleFundamentalsClick}
             sx={{ height: 20, fontSize: '10px', cursor: 'pointer', '& .MuiChip-icon': { fontSize: 12 } }}
           />
         </Tooltip>
 
+        {/* Cache Chip (NEW unified status) */}
         <Tooltip
           title={
             <Box sx={{ fontSize: '11px' }}>
-              <Box sx={{ fontWeight: 600, mb: 0.5 }}>Prices: {priceFreshness.status}</Box>
-              <Box>SPY Updated: {getRelativeTime(prices.spy_last_update)}</Box>
-              <Box>{prices.total_symbols_cached || 0} symbols cached</Box>
-              <Box sx={{ mt: 0.5, fontStyle: 'italic' }}>Click to refresh</Box>
-            </Box>
-          }
-          arrow
-        >
-          <Chip
-            icon={priceMutation.isPending ? <CircularProgress size={10} /> : priceFreshness.icon}
-            label="Price"
-            color={priceFreshness.color}
-            size="small"
-            onClick={(e) => handleRefreshClick('prices', e)}
-            sx={{ height: 20, fontSize: '10px', cursor: 'pointer', '& .MuiChip-icon': { fontSize: 12 } }}
-          />
-        </Tooltip>
-
-        {/* Force Refresh Button - always visible */}
-        <Tooltip
-          title={
-            <Box sx={{ fontSize: '11px' }}>
-              <Box sx={{ fontWeight: 600, mb: 0.5 }}>Force Refresh All Prices</Box>
-              <Box>Re-fetch price data for ALL cached symbols.</Box>
-              <Box>Use this to get latest closing prices.</Box>
-              {hasStaleIntraday && (
-                <Box sx={{ mt: 0.5, color: '#ff9800' }}>
-                  {staleCount} symbols have stale intraday data
+              <Box sx={{ fontWeight: 600, mb: 0.5 }}>
+                Cache: {health?.status?.charAt(0).toUpperCase() + health?.status?.slice(1) || 'Unknown'}
+              </Box>
+              <Box>{cacheProps.tooltip}</Box>
+              {health?.spy_last_date && (
+                <Box>SPY data through: {health.spy_last_date}</Box>
+              )}
+              {health?.task_running?.progress && (
+                <Box>Progress: {Math.round(health.task_running.progress)}%</Box>
+              )}
+              {health?.last_warmup && (
+                <Box>Last warmup: {health.last_warmup.status} ({health.last_warmup.count}/{health.last_warmup.total})</Box>
+              )}
+              {health?.status !== 'updating' && (
+                <Box sx={{ mt: 0.5, fontStyle: 'italic' }}>
+                  {health?.status === 'stale' || health?.status === 'partial'
+                    ? 'Click to refresh'
+                    : 'Click for options'}
                 </Box>
               )}
             </Box>
           }
           arrow
         >
-          <IconButton
-            size="small"
-            onClick={handleForceRefreshAll}
-            disabled={forceRefreshMutation.isPending}
-            sx={{
-              width: 20,
-              height: 20,
-              padding: 0,
-              '& .MuiSvgIcon-root': { fontSize: 14 }
-            }}
-          >
-            {forceRefreshMutation.isPending ? (
-              <CircularProgress size={12} />
-            ) : (
-              <RefreshIcon color={hasStaleIntraday ? 'warning' : 'action'} />
-            )}
-          </IconButton>
+          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+            <Chip
+              icon={refreshMutation.isPending || cancelMutation.isPending
+                ? <CircularProgress size={10} sx={{ color: cacheProps.color === 'info' ? 'white' : undefined }} />
+                : cacheProps.icon}
+              label={cacheProps.label}
+              color={cacheProps.color}
+              size="small"
+              onClick={health?.status !== 'updating' ? handleCacheChipClick : undefined}
+              sx={{
+                height: 20,
+                fontSize: '10px',
+                cursor: health?.status === 'updating' ? 'default' : 'pointer',
+                borderTopRightRadius: 0,
+                borderBottomRightRadius: 0,
+                '& .MuiChip-icon': { fontSize: 12 },
+                // Pulse animation for stale state
+                ...(health?.status === 'stale' && {
+                  animation: 'pulse 2s infinite',
+                  '@keyframes pulse': {
+                    '0%': { opacity: 1 },
+                    '50%': { opacity: 0.7 },
+                    '100%': { opacity: 1 }
+                  }
+                })
+              }}
+            />
+            <Chip
+              icon={<ArrowDropDownIcon />}
+              size="small"
+              color={cacheProps.color}
+              onClick={handleMenuOpen}
+              sx={{
+                height: 20,
+                minWidth: 20,
+                borderTopLeftRadius: 0,
+                borderBottomLeftRadius: 0,
+                marginLeft: '-1px',
+                cursor: 'pointer',
+                '& .MuiChip-icon': { fontSize: 14, margin: 0 },
+                '& .MuiChip-label': { display: 'none' }
+              }}
+            />
+          </Box>
         </Tooltip>
+
+        {/* Dropdown Menu */}
+        <Menu
+          anchorEl={menuAnchorEl}
+          open={Boolean(menuAnchorEl)}
+          onClose={handleMenuClose}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+          transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        >
+          <MenuItem onClick={handleAutoRefresh} disabled={refreshMutation.isPending || health?.status === 'updating'}>
+            <ListItemIcon><RefreshIcon fontSize="small" /></ListItemIcon>
+            <ListItemText
+              primary="Quick Refresh"
+              secondary="Refresh cached symbols"
+              primaryTypographyProps={{ fontSize: '12px' }}
+              secondaryTypographyProps={{ fontSize: '10px' }}
+            />
+          </MenuItem>
+          <MenuItem onClick={handleFullRefresh} disabled={refreshMutation.isPending || health?.status === 'updating'}>
+            <ListItemIcon><UpdateIcon fontSize="small" /></ListItemIcon>
+            <ListItemText
+              primary="Full Refresh"
+              secondary="All ~5000 symbols (~2 hours)"
+              primaryTypographyProps={{ fontSize: '12px' }}
+              secondaryTypographyProps={{ fontSize: '10px' }}
+            />
+          </MenuItem>
+          {canForceCancel && (
+            <MenuItem onClick={handleForceCancel} disabled={cancelMutation.isPending}>
+              <ListItemIcon><CancelIcon fontSize="small" color="error" /></ListItemIcon>
+              <ListItemText
+                primary="Force Cancel"
+                secondary="Cancel stuck task"
+                primaryTypographyProps={{ fontSize: '12px', color: 'error.main' }}
+                secondaryTypographyProps={{ fontSize: '10px' }}
+              />
+            </MenuItem>
+          )}
+        </Menu>
       </Box>
 
       {/* Confirmation Dialog */}
       <Dialog open={confirmDialog.open} onClose={handleCancel}>
-        <DialogTitle sx={{ fontSize: '14px', pb: 1 }}>Refresh Fundamentals?</DialogTitle>
+        <DialogTitle sx={{ fontSize: '14px', pb: 1 }}>
+          {confirmDialog.type === 'fundamentals' ? 'Refresh Fundamentals?' : 'Full Cache Refresh?'}
+        </DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ fontSize: '12px' }}>
-            This will refresh data for ~7,000 stocks. Takes ~1 hour.
+            {confirmDialog.type === 'fundamentals'
+              ? 'This will refresh data for ~7,000 stocks. Takes ~1 hour.'
+              : 'This will refresh price data for ALL ~5,000 symbols. Takes approximately 2 hours.'}
           </DialogContentText>
         </DialogContent>
         <DialogActions>
@@ -430,7 +566,7 @@ export default function CacheStatus() {
       {/* Notification */}
       <Snackbar
         open={notification.open}
-        autoHideDuration={3000}
+        autoHideDuration={4000}
         onClose={handleNotificationClose}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
       >
