@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date
 from uuid import uuid4
 
 from app.models.industry import IBDGroupRank
