@@ -79,15 +79,6 @@ export const getStockIndustry = async (symbol) => {
 };
 
 /**
- * Check API health
- * @returns {Promise} Health status
- */
-export const checkHealth = async () => {
-  const response = await apiClient.get('/health');
-  return response.data;
-};
-
-/**
  * Get Minervini template scan for a stock
  * @param {string} symbol - Stock ticker symbol
  * @param {boolean} includeVCP - Include VCP pattern detection

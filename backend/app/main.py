@@ -1,12 +1,17 @@
 """
 Main FastAPI application entry point.
 """
+import json
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+from sqlalchemy import text
 
 from .config import settings
-from .database import init_db
+from .database import init_db, engine
+from .services.redis_pool import get_redis_client
 
 
 def cleanup_invalid_universe_scans():
@@ -141,29 +146,54 @@ async def root():
     }
 
 
+@app.get("/livez")
+async def liveness():
+    """Liveness probe - zero dependencies, confirms process is responsive."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readiness():
+    """Readiness probe - checks database and Redis connectivity."""
+    checks = {}
+    healthy = True
+
+    # DB: verify connectivity with a lightweight query
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as e:
+        checks["database"] = f"error: {type(e).__name__}"
+        healthy = False
+
+    # Redis: verify connectivity via ping
+    try:
+        client = get_redis_client()
+        if client and client.ping():
+            checks["redis"] = "ok"
+        else:
+            checks["redis"] = "error: unavailable"
+            healthy = False
+    except Exception as e:
+        checks["redis"] = f"error: {type(e).__name__}"
+        healthy = False
+
+    status_code = 200 if healthy else 503
+    return JSONResponse(
+        content={"status": "ok" if healthy else "degraded", "checks": checks},
+        status_code=status_code,
+    )
+
+
 @app.get("/health")
 async def health_check():
-    """Health check endpoint with yfinance connectivity test."""
-    import yfinance as yf
-
-    # Test yfinance connectivity with a known stock
-    yfinance_status = "unknown"
-    try:
-        test_ticker = yf.Ticker("SPY")
-        test_info = test_ticker.info
-        if test_info and len(test_info) > 3:
-            yfinance_status = "ok"
-        else:
-            yfinance_status = "degraded"
-    except Exception as e:
-        yfinance_status = f"error: {type(e).__name__}"
-
-    return {
-        "status": "healthy",
-        "database": "connected",
-        "version": "0.1.0",
-        "yfinance": yfinance_status
-    }
+    """Deprecated health check - use /readyz instead."""
+    result = await readiness()
+    body = json.loads(result.body)
+    body["deprecated"] = True
+    body["use_instead"] = "/readyz"
+    return JSONResponse(content=body, status_code=result.status_code)
 
 
 # Include API routers

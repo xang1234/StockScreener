@@ -1,0 +1,83 @@
+"""
+Tests for /livez, /readyz, and /health endpoints.
+"""
+import pytest
+import pytest_asyncio
+from unittest.mock import patch, MagicMock
+import httpx
+
+from app.main import app
+
+
+@pytest_asyncio.fixture
+async def client():
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest.mark.asyncio
+class TestLivez:
+    async def test_returns_200(self, client):
+        response = await client.get("/livez")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.asyncio
+class TestReadyz:
+    async def test_healthy_when_db_and_redis_up(self, client):
+        mock_redis = MagicMock()
+        mock_redis.ping.return_value = True
+        with patch("app.main.get_redis_client", return_value=mock_redis):
+            response = await client.get("/readyz")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "ok"
+            assert data["checks"]["database"] == "ok"
+            assert data["checks"]["redis"] == "ok"
+
+    async def test_503_when_redis_unavailable(self, client):
+        with patch("app.main.get_redis_client", return_value=None):
+            response = await client.get("/readyz")
+            assert response.status_code == 503
+            data = response.json()
+            assert data["status"] == "degraded"
+            assert "error" in data["checks"]["redis"]
+
+    async def test_503_when_redis_ping_fails(self, client):
+        mock_client = MagicMock()
+        mock_client.ping.side_effect = ConnectionError("refused")
+        with patch("app.main.get_redis_client", return_value=mock_client):
+            response = await client.get("/readyz")
+            assert response.status_code == 503
+            data = response.json()
+            assert data["status"] == "degraded"
+            assert "ConnectionError" in data["checks"]["redis"]
+
+    async def test_503_when_db_unavailable(self, client):
+        with patch("app.main.engine") as mock_engine:
+            mock_engine.connect.side_effect = Exception("db down")
+            response = await client.get("/readyz")
+            assert response.status_code == 503
+            data = response.json()
+            assert data["status"] == "degraded"
+            assert "error" in data["checks"]["database"]
+
+
+@pytest.mark.asyncio
+class TestHealthDeprecated:
+    async def test_returns_deprecated_flag(self, client):
+        response = await client.get("/health")
+        data = response.json()
+        assert data["deprecated"] is True
+        assert data["use_instead"] == "/readyz"
+
+    async def test_mirrors_readyz_status(self, client):
+        readyz_response = await client.get("/readyz")
+        health_response = await client.get("/health")
+        assert readyz_response.status_code == health_response.status_code
+        # Health has extra fields
+        health_data = health_response.json()
+        assert "checks" in health_data
+        assert "status" in health_data

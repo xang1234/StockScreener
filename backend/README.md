@@ -83,7 +83,9 @@ Once the server is running, visit:
 
 ### Health & Info
 - `GET /` - API information
-- `GET /health` - Health check
+- `GET /livez` - Liveness probe (zero dependencies)
+- `GET /readyz` - Readiness probe (checks DB + Redis)
+- `GET /health` - Deprecated alias for `/readyz`
 
 ### Stock Data
 - `GET /api/v1/stocks/{symbol}/info` - Basic stock information
