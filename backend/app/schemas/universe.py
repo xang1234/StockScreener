@@ -133,9 +133,11 @@ class UniverseDefinition(BaseModel):
                 return "S&P 500"
             return self.index.value
         elif self.type == UniverseType.CUSTOM:
-            return f"Custom ({len(self.symbols)} symbols)"
+            n = len(self.symbols)
+            return f"Custom ({n} {'symbol' if n == 1 else 'symbols'})"
         else:  # TEST
-            return f"Test ({len(self.symbols)} symbols)"
+            n = len(self.symbols)
+            return f"Test ({n} {'symbol' if n == 1 else 'symbols'})"
 
     @classmethod
     def from_legacy(cls, universe: str, symbols: Optional[List[str]] = None) -> "UniverseDefinition":

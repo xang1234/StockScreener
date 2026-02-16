@@ -19,6 +19,7 @@ import io
 from ...database import get_db
 from ...models.scan_result import Scan, ScanResult
 from ...models.stock_universe import StockUniverse
+from pydantic import ValidationError
 from ...schemas.universe import UniverseDefinition
 from ...services.stock_universe_service import stock_universe_service
 from ...services import universe_resolver
@@ -296,7 +297,7 @@ async def create_scan(
                 universe_def = UniverseDefinition.from_legacy(
                     request.universe, request.symbols
                 )
-            except ValueError as e:
+            except (ValueError, ValidationError) as e:
                 raise HTTPException(status_code=400, detail=str(e))
 
         # Resolve symbols via centralized resolver

@@ -8,6 +8,7 @@ migration preserves those scans by backfilling them with proper typed fields.
 Safe to run on every startup — detects existing columns and skips if present.
 """
 import hashlib
+import json
 import logging
 from sqlalchemy import text
 
@@ -139,7 +140,7 @@ def _backfill_universe_fields(conn) -> int:
             sym_result = conn.execute(text(
                 "SELECT symbol FROM scan_results WHERE scan_id = :scan_id ORDER BY symbol"
             ), {"scan_id": scan_id})
-            symbols = [r[0] for r in sym_result.fetchall()]
+            symbols = sorted(r[0] for r in sym_result.fetchall())
 
             if symbols:
                 joined = ",".join(symbols)
@@ -148,7 +149,6 @@ def _backfill_universe_fields(conn) -> int:
             else:
                 key = f"{universe_lower}:empty"
 
-            import json
             conn.execute(text(
                 "UPDATE scans SET universe_key = :key, universe_type = :type, "
                 "universe_symbols = :symbols WHERE id = :id"

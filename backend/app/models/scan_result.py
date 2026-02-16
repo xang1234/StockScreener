@@ -66,7 +66,7 @@ class Scan(Base):
                     self.universe or "all",
                     self.universe_symbols,
                 )
-            except (ValueError, Exception) as e:
+            except Exception as e:
                 logger.warning(
                     f"Could not parse legacy universe '{self.universe}' "
                     f"for scan {self.scan_id}: {e}"

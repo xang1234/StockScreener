@@ -185,7 +185,7 @@ class TestLabel:
 
     def test_test_label(self):
         u = UniverseDefinition(type=UniverseType.TEST, symbols=["AAPL"])
-        assert u.label() == "Test (1 symbols)"
+        assert u.label() == "Test (1 symbol)"
 
 
 class TestFromLegacy:
