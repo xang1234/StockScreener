@@ -1,0 +1,1 @@
+"""Cache infrastructure — Redis adapters."""
