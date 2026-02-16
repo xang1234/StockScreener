@@ -6,10 +6,15 @@ import apiClient from './client';
 /**
  * Create a new bulk scan
  * @param {Object} params - Scan parameters
- * @param {string} params.universe - Universe filter: 'all', 'nyse', 'nasdaq', or 'custom'
- * @param {Array<string>} params.symbols - Custom symbol list (if universe='custom')
+ * @param {string} params.universe - Universe filter: 'all', 'nyse', 'nasdaq', 'amex', 'sp500', 'custom', or 'test'
+ * @param {Array<string>} params.symbols - Custom symbol list (required if universe='custom' or 'test')
+ * @param {Object} [params.universe_def] - Structured universe definition (takes precedence over legacy universe field)
+ * @param {string} params.universe_def.type - Universe type: 'all', 'exchange', 'index', 'custom', 'test'
+ * @param {string} [params.universe_def.exchange] - Exchange name: 'NYSE', 'NASDAQ', 'AMEX' (if type='exchange')
+ * @param {string} [params.universe_def.index] - Index name: 'SP500' (if type='index')
+ * @param {Array<string>} [params.universe_def.symbols] - Symbol list (if type='custom' or 'test')
  * @param {Object} params.criteria - Scan criteria
- * @param {Array<string>} params.screeners - Screeners to run: ['minervini', 'canslim', 'ipo', 'custom']
+ * @param {Array<string>} params.screeners - Screeners to run: ['minervini', 'canslim', 'ipo', 'custom', 'volume_breakthrough']
  * @param {string} params.composite_method - How to combine scores: 'weighted_average', 'maximum', 'minimum'
  * @returns {Promise<Object>} Scan creation response with scan_id
  */

@@ -317,19 +317,23 @@ function ScanPage() {
       criteria.custom_filters = customFilters;
     }
 
+    // Map UI universe value to API parameters
+    // For 'test', we send universe='test' with TEST_SYMBOLS
+    // For exchange/index values (nyse, nasdaq, amex, sp500), the backend's
+    // from_legacy() parser handles the conversion to typed UniverseDefinition
     const scanRequest = {
-      universe: universe === 'test' ? 'custom' : universe,
+      universe: universe,
       screeners: selectedScreeners,
       composite_method: compositeMethod,
       criteria: criteria,
     };
-    console.log('📤 Sending scan request:', scanRequest);
 
     // Add custom symbols if test universe is selected
     if (universe === 'test') {
       scanRequest.symbols = TEST_SYMBOLS;
     }
 
+    console.log('📤 Sending scan request:', scanRequest);
     createScanMutation.mutate(scanRequest);
   };
 
@@ -656,10 +660,39 @@ function ScanPage() {
 
   // Format scan label for dropdown
   const formatScanLabel = (scan) => {
-    const universeLabel = scan.universe === 'custom' ? 'Test' :
-                         scan.universe === 'sp500' ? 'S&P500' :
-                         scan.universe === 'all' ? 'All' :
-                         scan.universe.toUpperCase();
+    let universeLabel;
+
+    // Prefer structured universe_type if available (post-migration scans)
+    if (scan.universe_type) {
+      switch (scan.universe_type) {
+        case 'all':
+          universeLabel = 'All';
+          break;
+        case 'exchange':
+          universeLabel = scan.universe_exchange || 'Exchange';
+          break;
+        case 'index':
+          universeLabel = scan.universe_index === 'SP500' ? 'S&P500' : (scan.universe_index || 'Index');
+          break;
+        case 'custom':
+          universeLabel = `Custom (${scan.universe_symbols_count || '?'})`;
+          break;
+        case 'test':
+          universeLabel = `Test (${scan.universe_symbols_count || '?'})`;
+          break;
+        default:
+          universeLabel = scan.universe_type;
+      }
+    } else {
+      // Fallback for pre-migration scans using legacy universe string
+      const u = (scan.universe || '').toLowerCase();
+      universeLabel = u === 'custom' ? 'Test' :
+                      u === 'sp500' ? 'S&P500' :
+                      u === 'all' ? 'All' :
+                      u === 'all stocks' ? 'All' :
+                      scan.universe ? scan.universe.toUpperCase() : 'Unknown';
+    }
+
     const dateStr = new Date(scan.started_at).toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
@@ -697,7 +730,7 @@ function ScanPage() {
           <Box sx={{ borderLeft: 1, borderColor: 'divider', height: 32, mx: 0.5 }} />
 
           {/* Universe */}
-          <FormControl size="small" sx={{ minWidth: 130 }}>
+          <FormControl size="small" sx={{ minWidth: 150 }}>
             <InputLabel id="universe-label">Universe</InputLabel>
             <Select
               labelId="universe-label"
@@ -707,7 +740,21 @@ function ScanPage() {
               disabled={createScanMutation.isPending || scanStatus === 'running'}
             >
               <MenuItem value="test">Test (20)</MenuItem>
-              <MenuItem value="all">All</MenuItem>
+              <MenuItem value="sp500">
+                S&P 500{universeStats?.by_exchange ? ` (${universeStats.sp500 || '~500'})` : ''}
+              </MenuItem>
+              <MenuItem value="nyse">
+                NYSE{universeStats?.by_exchange?.NYSE ? ` (${universeStats.by_exchange.NYSE})` : ''}
+              </MenuItem>
+              <MenuItem value="nasdaq">
+                NASDAQ{universeStats?.by_exchange?.NASDAQ ? ` (${universeStats.by_exchange.NASDAQ})` : ''}
+              </MenuItem>
+              <MenuItem value="amex">
+                AMEX{universeStats?.by_exchange?.AMEX ? ` (${universeStats.by_exchange.AMEX})` : ''}
+              </MenuItem>
+              <MenuItem value="all">
+                All{universeStats?.active ? ` (${universeStats.active})` : ''}
+              </MenuItem>
             </Select>
           </FormControl>
 
@@ -772,7 +819,12 @@ function ScanPage() {
           <Box sx={{ fontSize: '11px', color: 'text.secondary' }}>
             {universe === 'test' ? `${TEST_SYMBOLS.length} stocks` :
              statsLoading ? '...' :
-             universeStats ? `${universeStats.active} stocks` : ''}
+             !universeStats ? '' :
+             universe === 'sp500' ? `${universeStats.sp500 || '~500'} stocks` :
+             universe === 'nyse' && universeStats.by_exchange?.NYSE ? `${universeStats.by_exchange.NYSE} stocks` :
+             universe === 'nasdaq' && universeStats.by_exchange?.NASDAQ ? `${universeStats.by_exchange.NASDAQ} stocks` :
+             universe === 'amex' && universeStats.by_exchange?.AMEX ? `${universeStats.by_exchange.AMEX} stocks` :
+             `${universeStats.active} stocks`}
           </Box>
 
           {/* Start/Cancel Button */}

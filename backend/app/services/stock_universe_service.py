@@ -618,10 +618,17 @@ class StockUniverseService:
             for exchange, count in exchanges:
                 by_exchange[exchange] = count
 
+            # Count S&P 500 members
+            sp500 = db.query(StockUniverse).filter(
+                StockUniverse.is_active == True,
+                StockUniverse.is_sp500 == True,
+            ).count()
+
             return {
                 'total': total,
                 'active': active,
                 'by_exchange': by_exchange,
+                'sp500': sp500,
             }
 
         except Exception as e:

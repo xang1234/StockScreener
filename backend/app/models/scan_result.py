@@ -1,7 +1,10 @@
 """Scan and scan result models"""
+import logging
 from sqlalchemy import Column, Integer, String, Float, BigInteger, DateTime, JSON, Index, ForeignKey
 from sqlalchemy.sql import func
 from ..database import Base
+
+logger = logging.getLogger(__name__)
 
 
 class Scan(Base):
@@ -14,7 +17,14 @@ class Scan(Base):
 
     # Scan configuration
     criteria = Column(JSON)  # Scan criteria configuration
-    universe = Column(String(50))  # e.g., "test", "all", "custom"
+    universe = Column(String(50))  # Legacy: "test", "all", "custom" — kept for backward compat
+
+    # Structured universe fields (populated by UniverseDefinition)
+    universe_key = Column(String(128), index=True)       # Canonical key for retention grouping
+    universe_type = Column(String(20), index=True)       # UniverseType enum value
+    universe_exchange = Column(String(20), nullable=True, index=True)  # For exchange-scoped scans
+    universe_index = Column(String(20), nullable=True, index=True)     # For index-scoped scans
+    universe_symbols = Column(JSON, nullable=True)       # Symbol list for custom/test
 
     # Multi-screener configuration
     screener_types = Column(JSON, default=lambda: ["minervini"])  # List of screener names
@@ -31,6 +41,44 @@ class Scan(Base):
     # Timestamps
     started_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True))
+
+    def get_universe_definition(self):
+        """
+        Reconstruct a UniverseDefinition from the structured DB fields.
+
+        Falls back to from_legacy() for pre-migration rows where
+        universe_type is NULL.
+
+        Returns:
+            UniverseDefinition instance
+        """
+        from ..schemas.universe import (
+            Exchange,
+            IndexName,
+            UniverseDefinition,
+            UniverseType,
+        )
+
+        if self.universe_type is None:
+            # Pre-migration row: parse from legacy string
+            try:
+                return UniverseDefinition.from_legacy(
+                    self.universe or "all",
+                    self.universe_symbols,
+                )
+            except (ValueError, Exception) as e:
+                logger.warning(
+                    f"Could not parse legacy universe '{self.universe}' "
+                    f"for scan {self.scan_id}: {e}"
+                )
+                return UniverseDefinition(type=UniverseType.ALL)
+
+        return UniverseDefinition(
+            type=UniverseType(self.universe_type),
+            exchange=Exchange(self.universe_exchange) if self.universe_exchange else None,
+            index=IndexName(self.universe_index) if self.universe_index else None,
+            symbols=self.universe_symbols,
+        )
 
 
 class ScanResult(Base):

@@ -3,6 +3,7 @@ Configuration settings for the Stock Scanner application.
 Loads environment variables and provides application settings.
 """
 from pathlib import Path
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from typing import List
 
@@ -65,6 +66,7 @@ class Settings(BaseSettings):
     redis_db: int = 0
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
+    celery_timezone: str = "America/New_York"  # Celery Beat interprets crontab in this tz
     scan_concurrent_workers: int = 4
     scan_rate_limit: float = 1.0  # requests per second (legacy, kept for backward compatibility)
 
@@ -137,9 +139,6 @@ class Settings(BaseSettings):
     data_fetch_lock_wait_seconds: int = 7200  # Max wait for lock before failing
     data_fetch_startup_delay: int = 5  # Seconds to wait before startup task
 
-    # One-time cleanup flags
-    invalid_universe_cleanup_enabled: bool = False  # Disabled by default to avoid destructive startup
-
     # SEC EDGAR Configuration
     sec_user_agent: str = "StockScanner/1.0 (contact@example.com)"
     sec_rate_limit_delay: float = 0.15  # 150ms between requests (SEC allows 10 req/sec)
@@ -169,6 +168,19 @@ class Settings(BaseSettings):
     deep_research_report_max_tokens: int = 16000  # Max tokens for final report
     read_url_timeout: int = 30  # Timeout for URL fetching
     read_url_max_chars: int = 100000  # Max characters to extract from URLs
+
+    @field_validator('celery_timezone')
+    @classmethod
+    def validate_celery_timezone(cls, v: str) -> str:
+        from zoneinfo import ZoneInfo
+        try:
+            ZoneInfo(v)
+        except (KeyError, Exception):
+            raise ValueError(
+                f"Invalid celery_timezone: {v!r}. "
+                f"Use IANA timezone like 'America/New_York'"
+            )
+        return v
 
     @property
     def groq_api_keys_list(self) -> List[str]:

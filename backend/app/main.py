@@ -14,43 +14,20 @@ from .database import init_db, engine
 from .services.redis_pool import get_redis_client
 
 
-def cleanup_invalid_universe_scans():
+def run_universe_migration():
     """
-    One-time cleanup of scans with invalid universes.
+    Run idempotent universe schema migration on startup.
 
-    Removes scans with universes that are no longer supported
-    (nyse, nasdaq, sp500). Only "test", "all", and "custom" universes are allowed.
+    Adds structured universe columns (universe_key, universe_type, etc.)
+    to the scans table and backfills existing rows. Replaces the old
+    destructive cleanup that deleted scans with 'nyse', 'nasdaq', 'sp500'.
     """
-    from .database import SessionLocal
-    from .models.scan_result import Scan, ScanResult
+    from .db_migrations.universe_migration import migrate_scan_universe_schema_and_backfill
 
-    db = SessionLocal()
     try:
-        invalid_universes = ["nyse", "nasdaq", "sp500"]
-        total_deleted = 0
-
-        for universe in invalid_universes:
-            scans = db.query(Scan).filter(Scan.universe == universe).all()
-            for scan in scans:
-                # Delete results first (foreign key constraint)
-                deleted_results = db.query(ScanResult).filter(
-                    ScanResult.scan_id == scan.scan_id
-                ).delete()
-                db.delete(scan)
-                print(f"Deleted scan {scan.scan_id} with invalid universe '{universe}' ({deleted_results} results)")
-                total_deleted += 1
-
-        if total_deleted > 0:
-            db.commit()
-            print(f"Cleaned up {total_deleted} scans with invalid universes")
-        else:
-            print("No scans with invalid universes found")
-
+        migrate_scan_universe_schema_and_backfill(engine)
     except Exception as e:
-        print(f"Error cleaning up invalid universe scans: {e}")
-        db.rollback()
-    finally:
-        db.close()
+        print(f"Warning: Universe migration failed (non-fatal): {e}")
 
 
 async def trigger_gapfill_on_startup():
@@ -102,9 +79,8 @@ async def lifespan(app: FastAPI):
     init_db()
     print("Database initialized")
 
-    # Cleanup scans with invalid universes (optional one-time migration)
-    if getattr(settings, "invalid_universe_cleanup_enabled", False):
-        cleanup_invalid_universe_scans()
+    # Run universe schema migration (idempotent — safe on every startup)
+    run_universe_migration()
 
     # Trigger non-blocking gap-fill for IBD group rankings
     if getattr(settings, 'group_rank_gapfill_enabled', True):

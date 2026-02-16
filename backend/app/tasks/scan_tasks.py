@@ -96,11 +96,14 @@ def update_scan_status(
         db.rollback()
 
 
-def cleanup_old_scans(db: Session, universe: str, keep_count: int = 3) -> None:
+def cleanup_old_scans(db: Session, universe_key: str, keep_count: int = 3) -> None:
     """
-    Delete old scans, keeping only the most recent `keep_count` per universe.
+    Delete old scans, keeping only the most recent `keep_count` per universe_key.
 
     Called after successful scan completion to maintain retention policy.
+    Uses universe_key (canonical identifier) instead of the legacy universe string,
+    so different exchange/custom scans get separate retention buckets.
+
     Handles:
     1. Cancelled scans - deleted immediately (no value)
     2. Stale running/queued scans - deleted if older than 1 hour (orphaned)
@@ -108,7 +111,7 @@ def cleanup_old_scans(db: Session, universe: str, keep_count: int = 3) -> None:
 
     Args:
         db: Database session
-        universe: Universe type (test, all, custom)
+        universe_key: Canonical universe key (e.g., "all", "exchange:NYSE", "custom:<hash>")
         keep_count: Number of recent scans to keep (default: 3)
     """
     from datetime import timedelta
@@ -119,12 +122,12 @@ def cleanup_old_scans(db: Session, universe: str, keep_count: int = 3) -> None:
 
         # 1. Delete all cancelled scans for this universe (they have no value)
         cancelled_scans = db.query(Scan).filter(
-            Scan.universe == universe,
+            Scan.universe_key == universe_key,
             Scan.status == "cancelled"
         ).all()
 
         if cancelled_scans:
-            logger.info(f"Cleaning up {len(cancelled_scans)} cancelled scans for universe '{universe}'")
+            logger.info(f"Cleaning up {len(cancelled_scans)} cancelled scans for universe_key '{universe_key}'")
             for scan in cancelled_scans:
                 deleted_results = db.query(ScanResult).filter(
                     ScanResult.scan_id == scan.scan_id
@@ -137,13 +140,13 @@ def cleanup_old_scans(db: Session, universe: str, keep_count: int = 3) -> None:
         # 2. Delete stale running/queued scans (older than 1 hour - they will never complete)
         stale_cutoff = datetime.utcnow() - timedelta(hours=1)
         stale_scans = db.query(Scan).filter(
-            Scan.universe == universe,
+            Scan.universe_key == universe_key,
             Scan.status.in_(["running", "queued"]),
             Scan.started_at < stale_cutoff
         ).all()
 
         if stale_scans:
-            logger.info(f"Cleaning up {len(stale_scans)} stale running/queued scans for universe '{universe}'")
+            logger.info(f"Cleaning up {len(stale_scans)} stale running/queued scans for universe_key '{universe_key}'")
             for scan in stale_scans:
                 deleted_results = db.query(ScanResult).filter(
                     ScanResult.scan_id == scan.scan_id
@@ -155,14 +158,14 @@ def cleanup_old_scans(db: Session, universe: str, keep_count: int = 3) -> None:
 
         # 3. Keep only the last `keep_count` completed scans (existing logic)
         completed_scans = db.query(Scan).filter(
-            Scan.universe == universe,
+            Scan.universe_key == universe_key,
             Scan.status == "completed"
         ).order_by(Scan.completed_at.desc()).all()
 
         scans_to_delete = completed_scans[keep_count:]
 
         if scans_to_delete:
-            logger.info(f"Cleaning up {len(scans_to_delete)} old completed scans for universe '{universe}'")
+            logger.info(f"Cleaning up {len(scans_to_delete)} old completed scans for universe_key '{universe_key}'")
             for scan in scans_to_delete:
                 deleted_results = db.query(ScanResult).filter(
                     ScanResult.scan_id == scan.scan_id
@@ -175,7 +178,7 @@ def cleanup_old_scans(db: Session, universe: str, keep_count: int = 3) -> None:
         if total_deleted_scans > 0:
             db.commit()
             logger.info(
-                f"Cleanup complete for '{universe}': deleted {total_deleted_scans} scans, "
+                f"Cleanup complete for '{universe_key}': deleted {total_deleted_scans} scans, "
                 f"{total_deleted_results} results. Kept {keep_count} most recent completed scans."
             )
 
@@ -564,10 +567,10 @@ def _run_parallel_scan(
     # Phase 4: Compute industry peer metrics
     compute_industry_peer_metrics(db, scan_id)
 
-    # Phase 5: Cleanup old scans (keep only last 3 per universe)
+    # Phase 5: Cleanup old scans (keep only last 3 per universe_key)
     scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
-    if scan:
-        cleanup_old_scans(db, scan.universe)
+    if scan and scan.universe_key:
+        cleanup_old_scans(db, scan.universe_key)
 
     # Phase 6: Pre-warm chart cache for top 50 results (runs async)
     try:
@@ -1062,10 +1065,10 @@ def run_bulk_scan(self, scan_id: str, symbol_list: List[str], criteria: dict = N
         # Phase 4: Compute industry peer metrics
         compute_industry_peer_metrics(db, scan_id)
 
-        # Phase 5: Cleanup old scans (keep only last 3 per universe)
+        # Phase 5: Cleanup old scans (keep only last 3 per universe_key)
         scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
-        if scan:
-            cleanup_old_scans(db, scan.universe)
+        if scan and scan.universe_key:
+            cleanup_old_scans(db, scan.universe_key)
 
         # Phase 6: Pre-warm chart cache for top 50 results (runs async)
         try:

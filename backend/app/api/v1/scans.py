@@ -19,7 +19,9 @@ import io
 from ...database import get_db
 from ...models.scan_result import Scan, ScanResult
 from ...models.stock_universe import StockUniverse
+from ...schemas.universe import UniverseDefinition
 from ...services.stock_universe_service import stock_universe_service
+from ...services import universe_resolver
 from ...tasks.scan_tasks import run_bulk_scan
 from ...celery_app import celery_app
 
@@ -71,8 +73,16 @@ def parse_ipo_after_preset(preset: str) -> Optional[str]:
 # Request/Response Models
 class ScanCreateRequest(BaseModel):
     """Request model for creating a new scan"""
-    universe: str = Field(default="all", description="Universe to scan: all, nyse, nasdaq, or custom")
-    symbols: Optional[List[str]] = Field(default=None, description="Custom symbol list (if universe=custom)")
+    universe: str = Field(
+        default="all",
+        description="Legacy universe selector. Accepts: all, test, custom, nyse, nasdaq, amex, sp500. "
+                    "Prefer universe_def for new integrations."
+    )
+    symbols: Optional[List[str]] = Field(default=None, description="Custom symbol list (if universe=custom/test)")
+    universe_def: Optional[UniverseDefinition] = Field(
+        default=None,
+        description="Structured universe definition. Takes precedence over legacy universe field."
+    )
     criteria: Optional[dict] = Field(default=None, description="Scan criteria")
 
     # Multi-screener fields
@@ -195,7 +205,11 @@ class ScanListItem(BaseModel):
     """Individual scan in the list"""
     scan_id: str
     status: str
-    universe: str
+    universe: str  # Legacy label (backward compat)
+    universe_type: Optional[str] = None
+    universe_exchange: Optional[str] = None
+    universe_index: Optional[str] = None
+    universe_symbols_count: Optional[int] = None
     total_stocks: int
     passed_stocks: int
     started_at: datetime
@@ -227,10 +241,15 @@ async def list_scans(
 
         scan_items = []
         for scan in scans:
+            symbols_count = len(scan.universe_symbols) if scan.universe_symbols else None
             scan_items.append(ScanListItem(
                 scan_id=scan.scan_id,
                 status=scan.status,
                 universe=scan.universe or "unknown",
+                universe_type=scan.universe_type,
+                universe_exchange=scan.universe_exchange,
+                universe_index=scan.universe_index,
+                universe_symbols_count=symbols_count,
                 total_stocks=scan.total_stocks or 0,
                 passed_stocks=scan.passed_stocks or 0,
                 started_at=scan.started_at,
@@ -269,34 +288,19 @@ async def create_scan(
         # Generate unique scan ID
         scan_id = str(uuid.uuid4())
 
-        # Validate universe - only allow "test", "all", and "custom"
-        if request.universe not in ("test", "all", "custom"):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Invalid universe '{request.universe}'. "
-                    "Only 'test', 'all', and 'custom' are supported."
-                )
-            )
-
-        # Get symbol list based on universe
-        if request.universe in ("custom", "test") and request.symbols:
-            # Custom/test universe uses provided symbols
-            symbols = [s.upper() for s in request.symbols]
-        elif request.universe == "all":
-            # All universe gets all active symbols
-            symbols = stock_universe_service.get_active_symbols(
-                db,
-                exchange=None,
-                sp500_only=False,
-                limit=None  # Get all
-            )
+        # Build typed universe definition
+        if request.universe_def is not None:
+            universe_def = request.universe_def
         else:
-            # Test universe without symbols provided
-            raise HTTPException(
-                status_code=400,
-                detail="Test universe requires symbols to be provided."
-            )
+            try:
+                universe_def = UniverseDefinition.from_legacy(
+                    request.universe, request.symbols
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
+        # Resolve symbols via centralized resolver
+        symbols = universe_resolver.resolve_symbols(db, universe_def)
 
         if not symbols:
             raise HTTPException(
@@ -310,7 +314,12 @@ async def create_scan(
         scan = Scan(
             scan_id=scan_id,
             criteria=request.criteria or {},
-            universe=request.universe,
+            universe=universe_def.label(),  # Human-readable for backward compat
+            universe_key=universe_def.key(),
+            universe_type=universe_def.type.value,
+            universe_exchange=universe_def.exchange.value if universe_def.exchange else None,
+            universe_index=universe_def.index.value if universe_def.index else None,
+            universe_symbols=universe_def.symbols,
             screener_types=request.screeners,
             composite_method=request.composite_method,
             total_stocks=len(symbols),
