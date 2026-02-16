@@ -88,6 +88,9 @@ def _stub_external_data(monkeypatch):
 
     monkeypatch.setattr(redis_pool, "get_redis_pool", lambda: None, raising=True)
     monkeypatch.setattr(redis_pool, "get_redis_client", lambda: None, raising=True)
+    monkeypatch.setattr(redis_pool, "get_bulk_redis_pool", lambda: None, raising=True)
+    monkeypatch.setattr(redis_pool, "get_bulk_redis_client", lambda: None, raising=True)
     redis_pool._pool = None
+    redis_pool._bulk_pool = None
 
     yield

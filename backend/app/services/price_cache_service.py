@@ -1197,9 +1197,10 @@ class PriceCacheService:
         """
         Get cached price data for multiple symbols using Redis pipeline.
 
-        Uses a single Redis pipeline operation to fetch all symbols at once,
-        dramatically reducing network round-trip overhead (10-20x faster than
-        individual get calls).
+        Uses chunked Redis pipeline operations (default 500 symbols/chunk)
+        with a dedicated bulk connection pool (longer timeout) to avoid
+        timeouts on large fetches. Per-chunk error handling ensures partial
+        Redis failures degrade to DB fallback instead of total failure.
 
         IMPORTANT: Falls back to database for full historical data if Redis
         only has recent data (30 days) but caller needs more (e.g., 2y for Minervini).
