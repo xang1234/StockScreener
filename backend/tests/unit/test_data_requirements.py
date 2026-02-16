@@ -1,133 +1,97 @@
-#!/usr/bin/env python
-"""
-Test to verify Minervini scan only fetches price data and quarterly growth,
-NOT fundamental data.
-"""
-import os
-import sys
-
-# Add backend directory to path (go up 3 levels: unit -> tests -> backend)
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from app.scanners.screener_registry import screener_registry
-from app.scanners.minervini_scanner_v2 import MinerviniScannerV2
+"""Tests for DataRequirements defaults, merging, and screener declarations."""
+from app.scanners.base_screener import DataRequirements
 from app.scanners.data_preparation import DataPreparationLayer
 
-print("=" * 80)
-print("MINERVINI DATA REQUIREMENTS TEST")
-print("=" * 80)
-print()
 
-# 1. Check if MinerviniScannerV2 is registered
-print("[1] Checking screener registry...")
-print("-" * 80)
-screeners = screener_registry.list_screeners()
-print(f"Registered screeners: {screeners}")
+class TestDataRequirementsDefaults:
+    """Verify bare DataRequirements() is minimal — no expensive fetches."""
 
-if "minervini" in screeners:
-    print("✓ Minervini screener is registered")
-else:
-    print("✗ ERROR: Minervini screener NOT registered!")
-    sys.exit(1)
+    def test_defaults_are_minimal(self):
+        req = DataRequirements()
+        assert req.price_period == "2y"
+        assert req.needs_fundamentals is False
+        assert req.needs_quarterly_growth is False
+        assert req.needs_benchmark is False
+        assert req.needs_earnings_history is False
 
-print()
 
-# 2. Get the minervini screener
-print("[2] Getting Minervini screener from registry...")
-print("-" * 80)
-minervini = screener_registry.get("minervini")
-print(f"Screener class: {minervini.__class__.__name__}")
-print(f"Screener name: {minervini.screener_name}")
+class TestMergeRequirements:
+    """Test merge logic via DataPreparationLayer.merge_requirements."""
 
-if isinstance(minervini, MinerviniScannerV2):
-    print("✓ Using MinerviniScannerV2 (correct)")
-else:
-    print(f"✗ WARNING: Using {minervini.__class__.__name__} instead of MinerviniScannerV2")
+    def setup_method(self):
+        self.data_layer = DataPreparationLayer.__new__(DataPreparationLayer)
 
-print()
+    def test_empty_list_returns_minimal(self):
+        merged = self.data_layer.merge_requirements([])
+        assert merged.needs_fundamentals is False
+        assert merged.needs_benchmark is False
+        assert merged.needs_quarterly_growth is False
+        assert merged.needs_earnings_history is False
 
-# 3. Check data requirements
-print("[3] Checking Minervini data requirements...")
-print("-" * 80)
-requirements = minervini.get_data_requirements()
+    def test_single_requirement_passthrough(self):
+        single = DataRequirements(
+            price_period="5y",
+            needs_fundamentals=True,
+            needs_benchmark=True,
+            needs_quarterly_growth=True,
+            needs_earnings_history=True,
+        )
+        merged = self.data_layer.merge_requirements([single])
+        assert merged.price_period == "5y"
+        assert merged.needs_fundamentals is True
+        assert merged.needs_benchmark is True
+        assert merged.needs_quarterly_growth is True
+        assert merged.needs_earnings_history is True
 
-print(f"Price period: {requirements.price_period}")
-print(f"Needs fundamentals: {requirements.needs_fundamentals}")
-print(f"Needs quarterly growth: {requirements.needs_quarterly_growth}")
-print(f"Needs benchmark: {requirements.needs_benchmark}")
-print(f"Needs earnings history: {requirements.needs_earnings_history}")
-print()
+    def test_merge_takes_union_of_booleans(self):
+        a = DataRequirements(needs_fundamentals=True, needs_benchmark=False)
+        b = DataRequirements(needs_fundamentals=False, needs_benchmark=True)
+        merged = self.data_layer.merge_requirements([a, b])
+        assert merged.needs_fundamentals is True
+        assert merged.needs_benchmark is True
 
-# Verify requirements
-if requirements.needs_fundamentals:
-    print("✗ ERROR: Minervini should NOT need fundamentals!")
-    print("  Minervini only uses price data, not fundamental metrics like PE ratio")
-else:
-    print("✓ CORRECT: needs_fundamentals=False")
+    def test_merge_takes_longest_period(self):
+        short = DataRequirements(price_period="1y")
+        long = DataRequirements(price_period="5y")
+        merged = self.data_layer.merge_requirements([short, long])
+        assert merged.price_period == "5y"
 
-if not requirements.needs_quarterly_growth:
-    print("⚠ WARNING: Minervini should need quarterly growth data!")
-else:
-    print("✓ CORRECT: needs_quarterly_growth=True")
+    def test_merge_three_requirements(self):
+        a = DataRequirements(needs_fundamentals=True)
+        b = DataRequirements(needs_quarterly_growth=True, price_period="5y")
+        c = DataRequirements(needs_benchmark=True, needs_earnings_history=True)
+        merged = self.data_layer.merge_requirements([a, b, c])
+        assert merged.needs_fundamentals is True
+        assert merged.needs_quarterly_growth is True
+        assert merged.needs_benchmark is True
+        assert merged.needs_earnings_history is True
+        assert merged.price_period == "5y"
 
-if not requirements.needs_benchmark:
-    print("✗ ERROR: Minervini should need benchmark (SPY) for RS rating!")
-else:
-    print("✓ CORRECT: needs_benchmark=True")
 
-print()
+class TestScreenerRequirements:
+    """Spot-check that screeners declare correct requirements."""
 
-# 4. Test merge requirements with multiple screeners
-print("[4] Testing merged requirements for multi-screener scan...")
-print("-" * 80)
-data_prep = DataPreparationLayer()
+    def test_canslim_needs_fundamentals_and_benchmark(self):
+        from app.scanners.canslim_scanner import CANSLIMScanner
 
-# Get CANSLIM screener (which needs fundamentals)
-canslim = screener_registry.get("canslim")
-if canslim:
-    canslim_reqs = canslim.get_data_requirements()
-    print(f"\nCANSLIM requirements:")
-    print(f"  needs_fundamentals: {canslim_reqs.needs_fundamentals}")
-    print(f"  needs_quarterly_growth: {canslim_reqs.needs_quarterly_growth}")
+        req = CANSLIMScanner().get_data_requirements()
+        assert req.needs_fundamentals is True
+        assert req.needs_benchmark is True
+        assert req.needs_quarterly_growth is True
+        assert req.needs_earnings_history is False  # Uses eps_growth_yy from quarterly_growth
 
-    # Merge requirements
-    merged = data_prep.merge_requirements([requirements, canslim_reqs])
+    def test_minervini_skips_fundamentals(self):
+        from app.scanners.minervini_scanner_v2 import MinerviniScannerV2
 
-    print(f"\nMerged requirements (Minervini + CANSLIM):")
-    print(f"  needs_fundamentals: {merged.needs_fundamentals}")
-    print(f"  needs_quarterly_growth: {merged.needs_quarterly_growth}")
+        req = MinerviniScannerV2().get_data_requirements()
+        assert req.needs_fundamentals is False
+        assert req.needs_benchmark is True
+        assert req.needs_quarterly_growth is False  # Informational only, not used in scoring
 
-    if merged.needs_fundamentals:
-        print("✓ CORRECT: Merged requirements include fundamentals (needed by CANSLIM)")
-    else:
-        print("✗ ERROR: Merged requirements should include fundamentals!")
-else:
-    print("CANSLIM screener not found - skipping merge test")
+    def test_volume_breakthrough_needs_long_history(self):
+        from app.scanners.volume_breakthrough_scanner import VolumeBreakthroughScanner
 
-print()
-
-# Summary
-print("=" * 80)
-print("SUMMARY")
-print("=" * 80)
-print()
-
-if not requirements.needs_fundamentals and requirements.needs_quarterly_growth:
-    print("✓ TEST PASSED")
-    print()
-    print("Minervini scan will only fetch:")
-    print("  - Price data (2y period)")
-    print("  - Quarterly growth data (EPS/sales)")
-    print("  - Benchmark data (SPY for RS rating)")
-    print()
-    print("It will NOT fetch:")
-    print("  - Fundamental data (PE ratio, market cap, etc.)")
-    print()
-    print("This means running a Minervini scan should be faster and")
-    print("should not show 'downloading fundamental data' in the logs.")
-else:
-    print("✗ TEST FAILED")
-    print()
-    print("Minervini scan configuration is incorrect!")
-
-print()
+        req = VolumeBreakthroughScanner().get_data_requirements()
+        assert req.price_period == "5y"
+        assert req.needs_fundamentals is True
+        assert req.needs_benchmark is False

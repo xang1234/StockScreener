@@ -22,9 +22,9 @@ class DataRequirements:
     once and share it across multiple screeners.
     """
     price_period: str = "2y"  # How much price history: "1y", "2y", "5y"
-    needs_fundamentals: bool = True  # Basic fundamentals (market cap, P/E, etc.)
+    needs_fundamentals: bool = False  # Basic fundamentals (market cap, P/E, etc.)
     needs_quarterly_growth: bool = False  # Quarterly earnings/revenue growth
-    needs_benchmark: bool = True  # SPY benchmark data for RS calculation
+    needs_benchmark: bool = False  # SPY benchmark data for RS calculation
     needs_earnings_history: bool = False  # Historical earnings data
 
     def merge(self, other: 'DataRequirements') -> 'DataRequirements':
