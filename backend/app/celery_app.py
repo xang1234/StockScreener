@@ -44,6 +44,7 @@ celery_app = Celery(
         'app.tasks.group_rank_tasks',  # IBD group ranking tasks
         'app.tasks.theme_discovery_tasks',  # Theme discovery pipeline tasks
         'app.tasks.universe_tasks',  # Stock universe management tasks
+        'app.interfaces.tasks.feature_store_tasks',  # Daily feature snapshot
     ]
 )
 
@@ -133,6 +134,8 @@ celery_app.conf.task_routes = {
     # Universe tasks (finviz)
     'app.tasks.universe_tasks.refresh_stock_universe': {'queue': 'data_fetch'},
     'app.tasks.universe_tasks.refresh_sp500_membership': {'queue': 'data_fetch'},
+    # Feature store tasks (multi-screener scan)
+    'app.interfaces.tasks.feature_store_tasks.build_daily_snapshot': {'queue': 'data_fetch'},
 }
 
 # Optional: Configure result expiration
@@ -210,6 +213,21 @@ if settings.cache_warmup_enabled:
                 day_of_week=0  # Sunday
             ),
             'options': {'queue': 'data_fetch'}
+        },
+
+        # Daily feature snapshot (queued after group rankings via serialized queue)
+        'daily-feature-snapshot': {
+            'task': 'app.interfaces.tasks.feature_store_tasks.build_daily_snapshot',
+            'schedule': crontab(
+                hour=_offset_schedule(settings.cache_warm_hour, settings.cache_warm_minute, 15)[0],
+                minute=_offset_schedule(settings.cache_warm_hour, settings.cache_warm_minute, 15)[1],
+                day_of_week='1-5',
+            ),
+            'options': {'queue': 'data_fetch'},
+            'kwargs': {
+                'screener_names': ['minervini', 'canslim'],
+                'universe_name': 'active',
+            },
         },
 
         # Auto-refresh stale intraday data after market close (4:45 PM ET)
