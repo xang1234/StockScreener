@@ -54,6 +54,10 @@ class RunBulkScanCommand:
     chunk_size: int = 50
     correlation_id: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.chunk_size < 1:
+            raise ValueError("chunk_size must be >= 1")
+
 
 # ── Result (output) ──────────────────────────────────────────────────────
 
@@ -153,7 +157,9 @@ class RunBulkScanUseCase:
 
         # ── Process chunks ────────────────────────────────────────
         processed = already_done
-        passed = 0
+        # Restore passed count from the scan record so resume doesn't
+        # lose previously-accumulated passes.
+        passed = getattr(scan, "passed_stocks", 0) or 0
         failed = 0
         start_time = time.monotonic()
 
@@ -224,7 +230,7 @@ class RunBulkScanUseCase:
                     total=total,
                     passed=passed,
                     failed=failed,
-                    throughput=round(throughput, 2) if throughput else None,
+                    throughput=round(throughput, 2) if throughput > 0 else None,
                     eta_seconds=round(eta) if eta is not None else None,
                 )
             )

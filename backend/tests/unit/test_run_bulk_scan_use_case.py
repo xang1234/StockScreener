@@ -379,6 +379,32 @@ class TestResume:
         assert result.total_scanned == 4  # total including resumed
         assert result.status == ScanStatus.COMPLETED.value
 
+    def test_resume_preserves_passed_count(self):
+        """On resume, the passed counter should include prior passes."""
+        scan_repo = FakeScanRepository()
+        scan = _make_scan("s1")
+        scan.passed_stocks = 5  # 5 passed in the previous partial run
+        scan_repo.scans["s1"] = scan
+
+        result_repo = FakeScanResultRepository()
+        result_repo._persisted_results = [("s1", f"SYM{i}", {}) for i in range(10)]
+        uow = FakeUnitOfWork(scans=scan_repo, scan_results=result_repo)
+
+        # Scanner returns 2 more passing symbols
+        scanner = FakeScanner()
+        cmd = RunBulkScanCommand(
+            scan_id="s1",
+            symbols=[f"SYM{i}" for i in range(12)],  # 10 done + 2 new
+            chunk_size=50,
+        )
+        result = _make_use_case(scanner).execute(
+            uow, cmd, FakeProgressSink(), FakeCancellationToken()
+        )
+
+        # 5 from before + 2 new passes = 7
+        assert result.passed == 7
+        assert scan_repo.scans["s1"].passed_stocks == 7
+
     def test_resume_with_all_done_completes_immediately(self):
         scan_repo = FakeScanRepository()
         scan_repo.scans["s1"] = _make_scan("s1")
@@ -518,3 +544,15 @@ class TestProgressEvents:
 
         # All symbols already processed → no chunks → no progress events
         assert len(progress.events) == 0
+
+
+class TestInputValidation:
+    """Command-level validation."""
+
+    def test_chunk_size_zero_raises(self):
+        with pytest.raises(ValueError, match="chunk_size must be >= 1"):
+            RunBulkScanCommand(scan_id="s1", symbols=["A"], chunk_size=0)
+
+    def test_chunk_size_negative_raises(self):
+        with pytest.raises(ValueError, match="chunk_size must be >= 1"):
+            RunBulkScanCommand(scan_id="s1", symbols=["A"], chunk_size=-5)

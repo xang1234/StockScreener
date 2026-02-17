@@ -9,6 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.domain.scanning.ports import ScanResultRepository
+from app.infra.serialization import convert_numpy_types
 from app.models.scan_result import ScanResult
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,11 @@ def _map_orchestrator_result(scan_id: str, symbol: str, raw: dict) -> dict:
     IBD/GICS classification lookups are *not* performed here; if needed
     the caller should pre-populate ``ibd_industry_group`` etc. in *raw*.
     """
+    # Normalise numpy/pandas types to native Python before extraction.
+    # Without this, numpy floats/ints from the ScanOrchestrator would
+    # cause JSON serialization failures in the ``details`` column.
+    raw = convert_numpy_types(raw)
+
     r: dict[str, Any] = {}
 
     r["scan_id"] = scan_id
