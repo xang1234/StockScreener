@@ -43,7 +43,7 @@ class DataPreparationLayer:
         if isinstance(exc, _TRANSIENT_TYPES):
             return True
         msg = str(exc).lower()
-        return any(k in msg for k in ("rate", "429", "too many", "timeout", "connection"))
+        return any(k in msg for k in ("rate limit", "429", "too many", "timeout", "connection reset", "connection refused"))
 
     def _fetch_with_retry(self, fn, *args, **kwargs):
         """Call *fn* with exponential-backoff retry on transient errors."""
@@ -157,7 +157,7 @@ class DataPreparationLayer:
                 # Use cache service instead of direct API call (no rate limiting needed - cache handles it)
                 fundamentals = self._fetch_with_retry(
                     self.fundamentals_cache.get_fundamentals,
-                    symbol=symbol,
+                    symbol,
                     force_refresh=False,  # Use cache by default
                 )
                 if fundamentals is None:

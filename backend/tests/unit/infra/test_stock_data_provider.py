@@ -389,12 +389,8 @@ class TestBulkDataPreparation:
 
         # Use a callable side_effect so retries don't consume other
         # symbols' results from a flat list.
-        msft_attempts = 0
-
         def _yf_side_effect(symbol, **kwargs):
-            nonlocal msft_attempts
             if symbol == "MSFT":
-                msft_attempts += 1
                 raise ValueError("MSFT bad data")  # non-transient → no retry
             return _make_price_df(price=180.0)
 
