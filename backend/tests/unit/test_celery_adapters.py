@@ -98,10 +98,10 @@ class TestDbCancellationToken:
         mock_session = MagicMock()
         mock_query = MagicMock()
 
-        # Build the chain: session.query().filter().first()
+        # Build the chain: session.query().filter().scalar()
         mock_session.query.return_value = mock_query
         mock_query.filter.return_value = mock_query
-        mock_query.first.return_value = MagicMock(status=scan_status)
+        mock_query.scalar.return_value = scan_status
 
         mock_factory = MagicMock(return_value=mock_session)
         token = DbCancellationToken(mock_factory, "test-scan-001")
@@ -135,7 +135,7 @@ class TestDbCancellationToken:
         mock_query = MagicMock()
         mock_session.query.return_value = mock_query
         mock_query.filter.return_value = mock_query
-        mock_query.first.return_value = None
+        mock_query.scalar.return_value = None
 
         mock_factory = MagicMock(return_value=mock_session)
         token = DbCancellationToken(mock_factory, "nonexistent")

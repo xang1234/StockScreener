@@ -50,7 +50,6 @@ class TestRunBulkScanViaUseCase:
 
         with (
             patch(f"{_WRAPPER_PATH}.SessionLocal") as mock_session_local,
-            patch("app.tasks.scan_tasks._run_bulk_scan_via_use_case.__module__", _WRAPPER_PATH),
             patch("app.wiring.bootstrap.get_run_bulk_scan_use_case", return_value=mock_use_case),
             patch("app.infra.db.uow.SqlUnitOfWork", mock_uow_cls),
             patch("app.infra.tasks.progress_sink.CeleryProgressSink", mock_progress_cls),

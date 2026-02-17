@@ -32,12 +32,12 @@ class DbCancellationToken(CancellationToken):
         try:
             # Invalidate the identity map so the next query hits the DB
             self._session.expire_all()
-            scan = (
+            status = (
                 self._session.query(Scan.status)
                 .filter(Scan.scan_id == self._scan_id)
-                .first()
+                .scalar()
             )
-            return scan is not None and scan.status == "cancelled"
+            return status == "cancelled"
         except Exception:
             logger.warning(
                 "Failed to check cancellation for scan %s",
