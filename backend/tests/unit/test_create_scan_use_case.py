@@ -64,6 +64,10 @@ class FakeScanResultRepository(ScanResultRepository):
     def count_by_scan_id(self, scan_id: str) -> int:
         return 0
 
+    def query(self, scan_id, spec, *, include_sparklines=True):
+        from app.domain.scanning.models import ResultPage
+        return ResultPage(items=(), total=0, page=1, per_page=50)
+
 
 class FakeUniverseRepository(UniverseRepository):
     def __init__(self, symbols: list[str] | None = None):

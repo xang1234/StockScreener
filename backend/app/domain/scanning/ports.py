@@ -13,7 +13,8 @@ from __future__ import annotations
 import abc
 from typing import Protocol
 
-from .models import ProgressEvent
+from .filter_spec import QuerySpec
+from .models import ProgressEvent, ResultPage
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +69,26 @@ class ScanResultRepository(abc.ABC):
     @abc.abstractmethod
     def count_by_scan_id(self, scan_id: str) -> int:
         """Return the number of results already stored for *scan_id*."""
+        ...
+
+    @abc.abstractmethod
+    def query(
+        self,
+        scan_id: str,
+        spec: QuerySpec,
+        *,
+        include_sparklines: bool = True,
+    ) -> ResultPage:
+        """Return a paginated, filtered, sorted page of scan results.
+
+        Args:
+            scan_id: Scan identifier (must exist — caller validates).
+            spec: Domain-level query specification (filters, sort, pagination).
+            include_sparklines: Whether to populate sparkline arrays in results.
+
+        Returns:
+            A :class:`ResultPage` with the matching items and total count.
+        """
         ...
 
 

@@ -8,9 +8,13 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.domain.scanning.filter_spec import QuerySpec
+from app.domain.scanning.models import ResultPage, ScanResultItemDomain
 from app.domain.scanning.ports import ScanResultRepository
+from app.infra.query.scan_result_query import apply_filters, apply_sort_and_paginate
 from app.infra.serialization import convert_numpy_types
 from app.models.scan_result import ScanResult
+from app.models.stock_universe import StockUniverse
 
 logger = logging.getLogger(__name__)
 
@@ -148,3 +152,119 @@ class SqlScanResultRepository(ScanResultRepository):
             .scalar()
             or 0
         )
+
+    def query(
+        self,
+        scan_id: str,
+        spec: QuerySpec,
+        *,
+        include_sparklines: bool = True,
+    ) -> ResultPage:
+        # Base query: LEFT JOIN stock_universe to get company names.
+        q = (
+            self._session.query(ScanResult, StockUniverse.name)
+            .outerjoin(StockUniverse, ScanResult.symbol == StockUniverse.symbol)
+            .filter(ScanResult.scan_id == scan_id)
+        )
+
+        # Apply domain filters → SQLAlchemy WHERE clauses.
+        q = apply_filters(q, spec.filters)
+
+        # Apply sort + pagination (SQL or Python depending on field).
+        rows, total, _python_sorted = apply_sort_and_paginate(
+            q, spec.sort, spec.page,
+        )
+
+        # Map ORM rows to domain objects.
+        items = tuple(
+            _map_row_to_domain(result, company_name, include_sparklines)
+            for result, company_name in rows
+        )
+
+        return ResultPage(
+            items=items,
+            total=total,
+            page=spec.page.page,
+            per_page=spec.page.per_page,
+        )
+
+
+def _map_row_to_domain(
+    result: ScanResult,
+    company_name: str | None,
+    include_sparklines: bool,
+) -> ScanResultItemDomain:
+    """Map a ScanResult ORM row to a domain value object."""
+    details = result.details or {}
+
+    extended: dict[str, Any] = {
+        "company_name": company_name,
+        "minervini_score": result.minervini_score,
+        "canslim_score": result.canslim_score,
+        "ipo_score": result.ipo_score,
+        "custom_score": result.custom_score,
+        "volume_breakthrough_score": result.volume_breakthrough_score,
+        "rs_rating": result.rs_rating,
+        "rs_rating_1m": result.rs_rating_1m,
+        "rs_rating_3m": result.rs_rating_3m,
+        "rs_rating_12m": result.rs_rating_12m,
+        "stage": result.stage,
+        "stage_name": details.get("stage_name"),
+        "volume": result.volume,
+        "market_cap": result.market_cap,
+        "ma_alignment": details.get("ma_alignment"),
+        "vcp_detected": details.get("vcp_detected"),
+        "vcp_score": details.get("vcp_score"),
+        "vcp_pivot": details.get("vcp_pivot"),
+        "vcp_ready_for_breakout": details.get("vcp_ready_for_breakout"),
+        "vcp_contraction_ratio": details.get("vcp_contraction_ratio"),
+        "vcp_atr_score": details.get("vcp_atr_score"),
+        "passes_template": details.get("passes_template", False),
+        "adr_percent": result.adr_percent,
+        "eps_growth_qq": result.eps_growth_qq,
+        "sales_growth_qq": result.sales_growth_qq,
+        "eps_growth_yy": result.eps_growth_yy,
+        "sales_growth_yy": result.sales_growth_yy,
+        "peg_ratio": result.peg_ratio,
+        "eps_rating": result.eps_rating,
+        "screeners_run": details.get("screeners_run"),
+        "ibd_industry_group": result.ibd_industry_group,
+        "ibd_group_rank": result.ibd_group_rank,
+        "gics_sector": result.gics_sector,
+        "gics_industry": result.gics_industry,
+        "rs_sparkline_data": result.rs_sparkline_data if include_sparklines else None,
+        "rs_trend": result.rs_trend,
+        "price_sparkline_data": result.price_sparkline_data if include_sparklines else None,
+        "price_change_1d": result.price_change_1d,
+        "price_trend": result.price_trend,
+        "ipo_date": result.ipo_date,
+        "beta": result.beta,
+        "beta_adj_rs": result.beta_adj_rs,
+        "beta_adj_rs_1m": result.beta_adj_rs_1m,
+        "beta_adj_rs_3m": result.beta_adj_rs_3m,
+        "beta_adj_rs_12m": result.beta_adj_rs_12m,
+        "perf_week": result.perf_week,
+        "perf_month": result.perf_month,
+        "perf_3m": result.perf_3m,
+        "perf_6m": result.perf_6m,
+        "gap_percent": result.gap_percent,
+        "volume_surge": result.volume_surge,
+        "ema_10_distance": result.ema_10_distance,
+        "ema_20_distance": result.ema_20_distance,
+        "ema_50_distance": result.ema_50_distance,
+        "week_52_high_distance": result.week_52_high_distance,
+        "week_52_low_distance": result.week_52_low_distance,
+    }
+
+    return ScanResultItemDomain(
+        symbol=result.symbol,
+        composite_score=result.composite_score or 0,
+        rating=result.rating or "Pass",
+        current_price=result.price,
+        screener_outputs={},  # not populated for list queries
+        screeners_run=details.get("screeners_run", []),
+        composite_method=details.get("composite_method", "weighted_average"),
+        screeners_passed=details.get("screeners_passed", 0),
+        screeners_total=details.get("screeners_total", 0),
+        extended_fields=extended,
+    )

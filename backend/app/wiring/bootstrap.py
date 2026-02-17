@@ -29,6 +29,7 @@ from app.infra.tasks.dispatcher import CeleryTaskDispatcher
 from app.scanners.scan_orchestrator import ScanOrchestrator
 from app.scanners.screener_registry import screener_registry
 from app.use_cases.scanning.create_scan import CreateScanUseCase
+from app.use_cases.scanning.get_scan_results import GetScanResultsUseCase
 from app.use_cases.scanning.run_bulk_scan import RunBulkScanUseCase
 
 
@@ -65,6 +66,11 @@ def get_task_dispatcher() -> TaskDispatcher:
 def get_create_scan_use_case() -> CreateScanUseCase:
     """Build a CreateScanUseCase wired with infrastructure adapters."""
     return CreateScanUseCase(dispatcher=get_task_dispatcher())
+
+
+def get_get_scan_results_use_case() -> GetScanResultsUseCase:
+    """Build a GetScanResultsUseCase (no extra dependencies — reads via UoW)."""
+    return GetScanResultsUseCase()
 
 
 def get_run_bulk_scan_use_case() -> RunBulkScanUseCase:
