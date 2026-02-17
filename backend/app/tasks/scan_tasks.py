@@ -592,7 +592,8 @@ def _run_parallel_scan(
         'completed': total_scanned,
         'passed': total_passed,
         'failed': total_failed,
-        'status': 'completed'
+        'status': 'completed',
+        'scan_path': 'legacy',
     }
 
 
@@ -930,6 +931,75 @@ def scan_stock_batch(
     )
 
 
+def _run_post_scan_pipeline(scan_id: str) -> None:
+    """Post-scan: peer metrics, retention cleanup, chart cache warming.
+
+    Shared by both the legacy path and the use-case path.
+    """
+    db = SessionLocal()
+    try:
+        compute_industry_peer_metrics(db, scan_id)
+        scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
+        if scan and scan.universe_key:
+            cleanup_old_scans(db, scan.universe_key)
+        try:
+            from .cache_tasks import prewarm_chart_cache_for_scan
+            prewarm_chart_cache_for_scan.delay(scan_id, top_n=50)
+        except Exception as e:
+            logger.warning("Chart cache warming failed: %s", e)
+    except Exception as e:
+        logger.error("Post-scan pipeline error for %s: %s", scan_id, e, exc_info=True)
+    finally:
+        db.close()
+
+
+def _run_bulk_scan_via_use_case(task_instance, scan_id, symbol_list, criteria):
+    """Thin wrapper that delegates to RunBulkScanUseCase (new path).
+
+    All business logic lives in the use case; this function only
+    wires infrastructure adapters (progress, cancellation, UoW).
+    """
+    # Lazy imports to avoid circular dep:
+    # bootstrap -> dispatcher -> scan_tasks -> bootstrap
+    from ..wiring.bootstrap import get_run_bulk_scan_use_case
+    from ..infra.db.uow import SqlUnitOfWork
+    from ..infra.tasks.progress_sink import CeleryProgressSink
+    from ..infra.tasks.cancellation import DbCancellationToken
+    from ..use_cases.scanning.run_bulk_scan import RunBulkScanCommand
+
+    progress = CeleryProgressSink(task_instance)
+    cancel = DbCancellationToken(SessionLocal, scan_id)
+
+    try:
+        uow = SqlUnitOfWork(SessionLocal)
+        use_case = get_run_bulk_scan_use_case()
+        cmd = RunBulkScanCommand(
+            scan_id=scan_id,
+            symbols=symbol_list,
+            criteria=criteria or {},
+            chunk_size=settings.scan_usecase_chunk_size,
+            correlation_id=task_instance.request.id,
+        )
+        result = use_case.execute(uow, cmd, progress, cancel)
+    except Exception:
+        logger.error("Fatal error in use case scan %s", scan_id, exc_info=True)
+        raise
+    finally:
+        cancel.close()
+
+    if result.status == "completed":
+        _run_post_scan_pipeline(scan_id)
+
+    return {
+        "scan_id": result.scan_id,
+        "completed": result.total_scanned,
+        "passed": result.passed,
+        "failed": result.failed,
+        "status": result.status,
+        "scan_path": "use_case",
+    }
+
+
 @celery_app.task(bind=True, name='app.tasks.scan_tasks.run_bulk_scan')
 @serialized_data_fetch('run_bulk_scan')
 def run_bulk_scan(self, scan_id: str, symbol_list: List[str], criteria: dict = None):
@@ -947,6 +1017,10 @@ def run_bulk_scan(self, scan_id: str, symbol_list: List[str], criteria: dict = N
     Returns:
         Dict with completion stats
     """
+    # Strangler pattern: delegate to use-case path when feature flag is on
+    if settings.use_new_scan_path:
+        return _run_bulk_scan_via_use_case(self, scan_id, symbol_list, criteria)
+
     db = SessionLocal()
 
     try:
@@ -1003,7 +1077,8 @@ def run_bulk_scan(self, scan_id: str, symbol_list: List[str], criteria: dict = N
                             'completed': completed,
                             'passed': passed,
                             'failed': failed,
-                            'status': 'cancelled'
+                            'status': 'cancelled',
+                            'scan_path': 'legacy',
                         }
 
                 # Scan individual stock
@@ -1091,7 +1166,8 @@ def run_bulk_scan(self, scan_id: str, symbol_list: List[str], criteria: dict = N
             'completed': completed,
             'passed': passed,
             'failed': failed,
-            'status': 'completed'
+            'status': 'completed',
+            'scan_path': 'legacy',
         }
 
     except Exception as e:

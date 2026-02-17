@@ -130,6 +130,20 @@ class CancellationToken(abc.ABC):
         ...
 
 
+class NullProgressSink(ProgressSink):
+    """No-op sink for testing and non-Celery contexts."""
+
+    def emit(self, event: ProgressEvent) -> None:
+        pass
+
+
+class NeverCancelledToken(CancellationToken):
+    """Token that never cancels — for CLI scripts and tests."""
+
+    def is_cancelled(self) -> bool:
+        return False
+
+
 class StockScanner(Protocol):
     """Structural type satisfied by :class:`ScanOrchestrator`.
 
