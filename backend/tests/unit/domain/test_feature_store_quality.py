@@ -21,10 +21,7 @@ from app.domain.feature_store.quality import (
     check_score_distribution,
     is_publishable,
 )
-from app.domain.feature_store.publish_policy import (
-    PublishDecision,
-    evaluate_publish_readiness,
-)
+from app.domain.feature_store.publish_policy import evaluate_publish_readiness
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -242,14 +239,17 @@ class TestEvaluatePublishReadiness:
     def test_running_status_blocks(self):
         decision = evaluate_publish_readiness(RunStatus.RUNNING, [])
         assert decision.allowed is False
+        assert decision.reason == "Run is not in COMPLETED status"
 
     def test_failed_status_blocks(self):
         decision = evaluate_publish_readiness(RunStatus.FAILED, [])
         assert decision.allowed is False
+        assert decision.reason == "Run is not in COMPLETED status"
 
     def test_published_status_blocks(self):
         decision = evaluate_publish_readiness(RunStatus.PUBLISHED, [])
         assert decision.allowed is False
+        assert decision.reason == "Run is not in COMPLETED status"
 
     def test_completed_only_warnings_fail(self):
         dq = [

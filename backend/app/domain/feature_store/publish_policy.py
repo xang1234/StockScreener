@@ -30,6 +30,8 @@ class PublishDecision:
     def reason(self) -> str:
         if self.allowed:
             return "All critical checks passed"
+        if not self.blocking_checks:
+            return "Run is not in COMPLETED status"
         names = ", ".join(r.check_name for r in self.blocking_checks)
         return f"Blocked by: {names}"
 
