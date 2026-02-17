@@ -4,7 +4,6 @@ import pytest
 
 from app.domain.common.errors import EntityNotFoundError
 from app.domain.scanning.models import FilterOptions
-from app.domain.scanning.ports import ScanResultRepository
 from app.use_cases.scanning.get_filter_options import (
     GetFilterOptionsQuery,
     GetFilterOptionsResult,

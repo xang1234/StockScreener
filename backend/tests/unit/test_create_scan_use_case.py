@@ -18,7 +18,6 @@ from app.use_cases.scanning.create_scan import (
 from tests.unit.scanning_fakes import (
     _ScanRecord,
     FakeScanResultRepository,
-    FakeUnitOfWork as _BaseFakeUnitOfWork,
 )
 
 

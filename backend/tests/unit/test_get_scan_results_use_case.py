@@ -4,15 +4,12 @@ import pytest
 
 from app.domain.common.errors import EntityNotFoundError
 from app.domain.scanning.filter_spec import (
-    FilterMode,
-    FilterSpec,
     PageSpec,
     QuerySpec,
     SortOrder,
     SortSpec,
 )
-from app.domain.scanning.models import FilterOptions, ResultPage, ScanResultItemDomain
-from app.domain.scanning.ports import ScanResultRepository
+from app.domain.scanning.models import ResultPage, ScanResultItemDomain
 from app.use_cases.scanning.get_scan_results import (
     GetScanResultsQuery,
     GetScanResultsResult,

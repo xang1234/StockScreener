@@ -9,7 +9,6 @@ needs custom return values, but imports the shared base and helpers from here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from app.domain.common.uow import UnitOfWork
