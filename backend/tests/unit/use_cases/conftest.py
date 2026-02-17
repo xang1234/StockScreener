@@ -11,7 +11,7 @@ Other test files outside this directory can import these fakes directly::
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -34,7 +34,7 @@ from app.domain.scanning.ports import (
     TaskDispatcher,
     UniverseRepository,
 )
-from app.scanners.base_screener import DataRequirements, StockData
+from app.scanners.base_screener import StockData
 
 
 # ---------------------------------------------------------------------------
@@ -236,12 +236,14 @@ class FakeStockDataProvider(StockDataProvider):
         self._price_days = price_days
         self.prepare_calls: list[str] = []
 
-    def prepare_data(self, symbol: str, requirements: object) -> StockData:
+    def prepare_data(
+        self, symbol: str, requirements: object, *, allow_partial: bool = True
+    ) -> StockData:
         self.prepare_calls.append(symbol)
         return self._make_stock_data(symbol)
 
     def prepare_data_bulk(
-        self, symbols: list[str], requirements: object
+        self, symbols: list[str], requirements: object, *, allow_partial: bool = True
     ) -> dict[str, StockData]:
         return {s: self.prepare_data(s, requirements) for s in symbols}
 

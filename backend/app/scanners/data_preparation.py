@@ -6,15 +6,21 @@ across all screeners. This eliminates redundant API calls and improves
 performance when running multiple screeners on the same stock.
 """
 import logging
+import random
+import time
 from typing import List, Dict, Optional
 import pandas as pd
 
 from .base_screener import DataRequirements, StockData
+from ..domain.common.errors import DataFetchError
 from ..services.yfinance_service import yfinance_service
 from ..services.benchmark_cache_service import BenchmarkCacheService
 from ..services.fundamentals_cache_service import FundamentalsCacheService
+from ..services.rate_limiter import RateLimitTimeoutError
 
 logger = logging.getLogger(__name__)
+
+_TRANSIENT_TYPES = (ConnectionError, TimeoutError, RateLimitTimeoutError)
 
 
 class DataPreparationLayer:
@@ -25,10 +31,35 @@ class DataPreparationLayer:
     multiple screeners, then shares that data across all screeners.
     """
 
-    def __init__(self):
+    def __init__(self, max_retries: int = 0, retry_base_delay: float = 1.0):
         """Initialize data preparation layer."""
         self.benchmark_cache = BenchmarkCacheService.get_instance()
         self.fundamentals_cache = FundamentalsCacheService.get_instance()
+        self._max_retries = max_retries
+        self._retry_base_delay = retry_base_delay
+
+    def _is_transient(self, exc: Exception) -> bool:
+        """Classify whether an exception is transient (worth retrying)."""
+        if isinstance(exc, _TRANSIENT_TYPES):
+            return True
+        msg = str(exc).lower()
+        return any(k in msg for k in ("rate", "429", "too many", "timeout", "connection"))
+
+    def _fetch_with_retry(self, fn, *args, **kwargs):
+        """Call *fn* with exponential-backoff retry on transient errors."""
+        last_exc = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:
+                last_exc = e
+                if attempt < self._max_retries and self._is_transient(e):
+                    delay = self._retry_base_delay * (2 ** attempt)
+                    jitter = random.uniform(0, delay * 0.1)
+                    time.sleep(delay + jitter)
+                else:
+                    raise
+        raise last_exc  # pragma: no cover — defensive, loop always re-raises
 
     def merge_requirements(self, requirements_list: List[DataRequirements]) -> DataRequirements:
         """
@@ -58,7 +89,9 @@ class DataPreparationLayer:
     def prepare_data(
         self,
         symbol: str,
-        requirements: DataRequirements
+        requirements: DataRequirements,
+        *,
+        allow_partial: bool = True,
     ) -> StockData:
         """
         Fetch all required data for a symbol.
@@ -66,6 +99,7 @@ class DataPreparationLayer:
         Args:
             symbol: Stock symbol
             requirements: Merged data requirements
+            allow_partial: If False, raise DataFetchError when any component fails.
 
         Returns:
             StockData object with all fetched data
@@ -87,10 +121,11 @@ class DataPreparationLayer:
                 # Cache miss or insufficient - fetch directly
                 # (yfinance_service has its own rate limiter)
                 logger.debug(f"Cache MISS for {symbol} - fetching from yfinance")
-                price_data = yfinance_service.get_historical_data(
+                price_data = self._fetch_with_retry(
+                    yfinance_service.get_historical_data,
                     symbol,
                     period=requirements.price_period,
-                    use_cache=False  # Already checked cache
+                    use_cache=False,  # Already checked cache
                 )
             else:
                 logger.debug(f"Cache HIT for {symbol} ({len(price_data)} days) - no rate limiting")
@@ -105,8 +140,9 @@ class DataPreparationLayer:
         benchmark_data = None
         if requirements.needs_benchmark:
             try:
-                benchmark_data = self.benchmark_cache.get_spy_data(
-                    period=requirements.price_period
+                benchmark_data = self._fetch_with_retry(
+                    self.benchmark_cache.get_spy_data,
+                    period=requirements.price_period,
                 )
                 if benchmark_data is None or benchmark_data.empty:
                     fetch_errors["benchmark_data"] = "No benchmark data returned"
@@ -119,9 +155,10 @@ class DataPreparationLayer:
         if requirements.needs_fundamentals:
             try:
                 # Use cache service instead of direct API call (no rate limiting needed - cache handles it)
-                fundamentals = self.fundamentals_cache.get_fundamentals(
+                fundamentals = self._fetch_with_retry(
+                    self.fundamentals_cache.get_fundamentals,
                     symbol=symbol,
-                    force_refresh=False  # Use cache by default
+                    force_refresh=False,  # Use cache by default
                 )
                 if fundamentals is None:
                     fetch_errors["fundamentals"] = "No fundamental data returned"
@@ -156,12 +193,17 @@ class DataPreparationLayer:
             fetch_errors=fetch_errors
         )
 
+        if not allow_partial and fetch_errors:
+            raise DataFetchError(symbol, fetch_errors, partial_data=stock_data)
+
         return stock_data
 
     def prepare_data_bulk(
         self,
         symbols: List[str],
-        requirements: DataRequirements
+        requirements: DataRequirements,
+        *,
+        allow_partial: bool = True,
     ) -> Dict[str, StockData]:
         """
         Fetch data for multiple stocks efficiently using bulk cache operations.
@@ -176,6 +218,7 @@ class DataPreparationLayer:
         Args:
             symbols: List of stock symbols
             requirements: Merged data requirements
+            allow_partial: If False, raise DataFetchError when any component fails.
 
         Returns:
             Dict mapping symbols to their StockData objects
@@ -199,11 +242,16 @@ class DataPreparationLayer:
 
         # Get benchmark data once (shared by all stocks)
         benchmark_data = None
+        all_errors: dict[str, str] = {}
         if requirements.needs_benchmark:
             try:
-                benchmark_data = self.benchmark_cache.get_spy_data(period=requirements.price_period)
+                benchmark_data = self._fetch_with_retry(
+                    self.benchmark_cache.get_spy_data,
+                    period=requirements.price_period,
+                )
             except Exception as e:
                 logger.warning(f"Error fetching benchmark data: {e}")
+                all_errors["<bulk>/benchmark_data"] = str(e)
 
         # Build StockData for each symbol
         results = {}
@@ -218,9 +266,10 @@ class DataPreparationLayer:
                 # Cache miss or insufficient - fetch directly
                 # (yfinance_service has its own rate limiter)
                 try:
-                    price_data = yfinance_service.get_historical_data(
+                    price_data = self._fetch_with_retry(
+                        yfinance_service.get_historical_data,
                         symbol,
-                        period=requirements.price_period
+                        period=requirements.price_period,
                     )
                     if price_data is None or price_data.empty:
                         fetch_errors["price_data"] = "No price data returned"
@@ -234,7 +283,11 @@ class DataPreparationLayer:
             if fundamentals is None and requirements.needs_fundamentals:
                 # Cache miss - fetch
                 try:
-                    fundamentals = self.fundamentals_cache.get_fundamentals(symbol, force_refresh=False)
+                    fundamentals = self._fetch_with_retry(
+                        self.fundamentals_cache.get_fundamentals,
+                        symbol,
+                        force_refresh=False,
+                    )
                     if fundamentals is None:
                         fetch_errors["fundamentals"] = "No fundamental data returned"
                 except Exception as e:
@@ -268,7 +321,15 @@ class DataPreparationLayer:
                 fetch_errors=fetch_errors
             )
 
+            # Collect per-symbol errors into namespaced dict for bulk error reporting
+            for key, msg in fetch_errors.items():
+                all_errors[f"{symbol}/{key}"] = msg
+
         logger.info(f"Bulk data preparation completed for {len(results)} symbols")
+
+        if not allow_partial and all_errors:
+            raise DataFetchError("<bulk>", all_errors, partial_data=results)
+
         return results
 
     def _fetch_fundamentals(self, symbol: str) -> Optional[Dict]:

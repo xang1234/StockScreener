@@ -21,3 +21,16 @@ class EntityNotFoundError(DomainError):
         self.entity = entity
         self.identifier = identifier
         super().__init__(f"{entity} not found: {identifier}")
+
+
+class DataFetchError(DomainError):
+    """One or more data components failed to fetch and allow_partial=False."""
+
+    def __init__(
+        self, symbol: str, errors: dict[str, str], partial_data: object = None
+    ) -> None:
+        self.symbol = symbol
+        self.errors = errors
+        self.partial_data = partial_data
+        summary = "; ".join(f"{k}: {v}" for k, v in errors.items())
+        super().__init__(f"Data fetch failed for {symbol}: {summary}")

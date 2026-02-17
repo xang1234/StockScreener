@@ -172,12 +172,14 @@ class StockDataProvider(abc.ABC):
     """Fetch market/fundamental data for scoring."""
 
     @abc.abstractmethod
-    def prepare_data(self, symbol: str, requirements: object) -> object:
+    def prepare_data(
+        self, symbol: str, requirements: object, *, allow_partial: bool = True
+    ) -> object:
         ...
 
     @abc.abstractmethod
     def prepare_data_bulk(
-        self, symbols: list[str], requirements: object
+        self, symbols: list[str], requirements: object, *, allow_partial: bool = True
     ) -> dict[str, object]:
         ...
 
