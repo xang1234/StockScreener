@@ -7,8 +7,6 @@ import pytest
 
 from app.domain.common.errors import EntityNotFoundError
 from app.domain.scanning.models import (
-    CriterionResult,
-    ScreenerExplanation,
     ScreenerOutputDomain,
     ScanResultItemDomain,
     StockExplanation,
@@ -75,17 +73,18 @@ def _make_item_with_outputs(
 
 
 def _make_minervini_output(score: float = 75.0) -> ScreenerOutputDomain:
+    """Build a Minervini output with the real nested breakdown format."""
     return ScreenerOutputDomain(
         screener_name="minervini",
         score=score,
         passes=score >= 60,
         rating="Buy",
         breakdown={
-            "rs_rating": 18.0,
-            "stage": 20.0,
-            "ma_alignment": 12.0,
-            "position_52w": 10.0,
-            "vcp": 0.0,
+            "rs_rating": {"points": 18.0, "max_points": 20, "value": 88, "passes": True},
+            "stage": {"points": 20.0, "max_points": 20, "value": 2, "passes": True},
+            "ma_alignment": {"points": 12.0, "max_points": 15, "value": 80, "passes": True},
+            "position_52w": {"points": 10.0, "max_points": 15, "passes": False},
+            "vcp": {"points": 0.0, "max_points": 20, "value": 0, "passes": False},
         },
         details={"rs_value": 88},
     )
@@ -149,7 +148,8 @@ class TestHappyPath:
         screener_exp = result.explanation.screener_explanations[0]
         assert len(screener_exp.criteria) == 5  # minervini has 5 breakdown keys
 
-    def test_max_scores_populated_for_known_screener(self):
+    def test_max_scores_from_nested_breakdown(self):
+        """Minervini nested dicts contain max_points directly."""
         item = _make_item_with_outputs(
             "AAPL", 85.0, {"minervini": _make_minervini_output()}
         )
@@ -169,7 +169,28 @@ class TestHappyPath:
         assert criteria_by_name["position_52w"].max_score == 15
         assert criteria_by_name["vcp"].max_score == 20
 
-    def test_passed_flag_reflects_positive_score(self):
+    def test_max_scores_from_flat_breakdown_use_lookup(self):
+        """CANSLIM uses flat breakdowns, so max_score comes from _MAX_SCORES lookup."""
+        item = _make_item_with_outputs(
+            "AAPL", 80.0, {"canslim": _make_canslim_output()}
+        )
+        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
+        uow = FakeUnitOfWork(scan_results=repo)
+        setup_scan(uow)
+        uc = ExplainStockUseCase()
+
+        result = uc.execute(uow, _make_query())
+
+        criteria_by_name = {
+            c.name: c for c in result.explanation.screener_explanations[0].criteria
+        }
+        assert criteria_by_name["current_earnings"].max_score == 20
+        assert criteria_by_name["annual_earnings"].max_score == 15
+        assert criteria_by_name["leader"].max_score == 20
+        assert criteria_by_name["institutional"].max_score == 15
+
+    def test_passed_flag_from_nested_breakdown(self):
+        """Minervini uses nested dicts with explicit 'passes' booleans."""
         item = _make_item_with_outputs(
             "AAPL", 85.0, {"minervini": _make_minervini_output()}
         )
@@ -183,9 +204,11 @@ class TestHappyPath:
         criteria_by_name = {
             c.name: c for c in result.explanation.screener_explanations[0].criteria
         }
-        # rs_rating=18.0 → passed=True, vcp=0.0 → passed=False
+        # rs_rating passes=True in breakdown, vcp passes=False in breakdown
         assert criteria_by_name["rs_rating"].passed is True
         assert criteria_by_name["vcp"].passed is False
+        # position_52w has points=10.0 (>0) but passes=False in breakdown
+        assert criteria_by_name["position_52w"].passed is False
 
     def test_rating_thresholds_included(self):
         item = _make_item_with_outputs(

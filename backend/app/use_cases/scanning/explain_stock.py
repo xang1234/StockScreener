@@ -119,14 +119,29 @@ class ExplainStockUseCase:
             max_scores_lookup = self._MAX_SCORES.get(screener_name, {})
 
             criteria: list[CriterionResult] = []
-            for criterion_name, score_value in output.breakdown.items():
-                score = float(score_value)
+            for criterion_name, raw_value in output.breakdown.items():
+                if isinstance(raw_value, dict):
+                    # Nested format (e.g. Minervini): {points, max_points, value, passes}
+                    score = float(raw_value.get("points", 0))
+                    max_score = float(
+                        raw_value.get(
+                            "max_points",
+                            max_scores_lookup.get(criterion_name, 0.0),
+                        )
+                    )
+                    passed = raw_value.get("passes", score > 0)
+                else:
+                    # Flat format (e.g. CANSLIM, IPO, Volume Breakthrough)
+                    score = float(raw_value)
+                    max_score = max_scores_lookup.get(criterion_name, 0.0)
+                    passed = score > 0
+
                 criteria.append(
                     CriterionResult(
                         name=criterion_name,
                         score=score,
-                        max_score=max_scores_lookup.get(criterion_name, 0.0),
-                        passed=score > 0,
+                        max_score=max_score,
+                        passed=passed,
                     )
                 )
 
