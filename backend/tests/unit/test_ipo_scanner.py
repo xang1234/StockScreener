@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.scanners.screener_registry import screener_registry
-from app.scanners.scan_orchestrator import ScanOrchestrator
+from app.wiring.bootstrap import get_scan_orchestrator
 import logging
 
 # Configure logging
@@ -76,7 +76,7 @@ def test_ipo_scoring():
     logger.info("TEST 2: IPO Scoring")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
 
     for symbol in ALL_TEST_SYMBOLS:
         logger.info(f"\n📊 IPO Scan: {symbol}")
@@ -139,7 +139,7 @@ def test_all_three_screeners():
     logger.info("TEST 3: All 3 Screeners (Minervini + CANSLIM + IPO)")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
 
     symbol = 'NVDA'  # Use a known stock
     logger.info(f"\nRunning ALL THREE screeners on {symbol}...")
@@ -209,7 +209,7 @@ def test_ipo_vs_old_stocks():
     logger.info("TEST 4: IPO vs Established Stocks Comparison")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
 
     logger.info("\n📊 Recent IPOs:")
     logger.info("-" * 80)

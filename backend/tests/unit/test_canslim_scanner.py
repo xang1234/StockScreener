@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.scanners.screener_registry import screener_registry
-from app.scanners.scan_orchestrator import ScanOrchestrator
+from app.wiring.bootstrap import get_scan_orchestrator
 import logging
 
 # Configure logging
@@ -72,7 +72,7 @@ def test_canslim_scoring():
     logger.info("TEST 2: CANSLIM Scoring")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
 
     for symbol in TEST_SYMBOLS:
         logger.info(f"\n📊 CANSLIM Scan: {symbol}")
@@ -134,7 +134,7 @@ def test_multi_screener():
     logger.info("TEST 3: Multi-Screener (Minervini + CANSLIM)")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
 
     symbol = TEST_SYMBOLS[0]  # Just test AAPL
     logger.info(f"\nRunning BOTH screeners on {symbol}...")
@@ -199,7 +199,7 @@ def test_composite_methods():
     logger.info("TEST 4: Composite Scoring Methods")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
     symbol = 'NVDA'
 
     logger.info(f"\nTesting composite methods on {symbol}...")

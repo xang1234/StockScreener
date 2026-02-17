@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.scanners.screener_registry import screener_registry
-from app.scanners.scan_orchestrator import ScanOrchestrator
+from app.wiring.bootstrap import get_scan_orchestrator
 import logging
 
 # Configure logging
@@ -84,7 +84,7 @@ def test_scan_orchestrator():
     logger.info("TEST 3: Scan Orchestrator")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
 
     for symbol in TEST_SYMBOLS:
         logger.info(f"\n📊 Scanning {symbol}...")

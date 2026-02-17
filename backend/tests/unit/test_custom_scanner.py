@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from app.scanners.screener_registry import screener_registry
-from app.scanners.scan_orchestrator import ScanOrchestrator
+from app.wiring.bootstrap import get_scan_orchestrator
 import logging
 
 # Configure logging
@@ -69,7 +69,7 @@ def test_basic_filters():
     logger.info("TEST 2: Basic Filters (Price, Volume, RS)")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
 
     # Configuration: basic filters only
     criteria = {
@@ -136,7 +136,7 @@ def test_fundamental_filters():
     logger.info("TEST 3: Fundamental Filters (Market Cap, Debt, Sector)")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
 
     # Configuration: fundamental filters
     criteria = {
@@ -191,7 +191,7 @@ def test_growth_filters():
     logger.info("TEST 4: Growth Filters (EPS, Sales)")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
 
     # Configuration: growth filters
     criteria = {
@@ -251,7 +251,7 @@ def test_technical_filters():
     logger.info("TEST 5: Technical Filters (MA Alignment, 52w High)")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
 
     # Configuration: technical filters
     criteria = {
@@ -321,7 +321,7 @@ def test_all_four_screeners():
     logger.info("TEST 6: All 4 Screeners (Minervini + CANSLIM + IPO + Custom)")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
 
     # Custom filter config
     custom_criteria = {
@@ -405,7 +405,7 @@ def test_combined_filters():
     logger.info("TEST 7: Combined Filter Configurations")
     logger.info("="*80)
 
-    orchestrator = ScanOrchestrator()
+    orchestrator = get_scan_orchestrator()
 
     # Test configuration: comprehensive filters
     criteria = {

@@ -57,9 +57,9 @@ def single_test_symbol():
 
 @pytest.fixture
 def scan_orchestrator():
-    """Provides a ScanOrchestrator instance."""
-    from app.scanners.scan_orchestrator import ScanOrchestrator
-    return ScanOrchestrator()
+    """Provides a ScanOrchestrator instance wired with production dependencies."""
+    from app.wiring.bootstrap import get_scan_orchestrator
+    return get_scan_orchestrator()
 
 
 @pytest.fixture
