@@ -34,3 +34,12 @@ class DataFetchError(DomainError):
         self.partial_data = partial_data
         summary = "; ".join(f"{k}: {v}" for k, v in errors.items())
         super().__init__(f"Data fetch failed for {symbol}: {summary}")
+
+
+class InvalidTransitionError(DomainError):
+    """An illegal state transition was attempted."""
+
+    def __init__(self, current: object, target: object) -> None:
+        self.current = current
+        self.target = target
+        super().__init__(f"Invalid transition: {current} -> {target}")
