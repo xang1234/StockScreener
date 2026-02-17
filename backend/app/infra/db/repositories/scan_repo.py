@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy.orm import Session
 
 from app.domain.scanning.ports import ScanRepository
@@ -33,3 +35,19 @@ class SqlScanRepository(ScanRepository):
             .filter(Scan.idempotency_key == key)
             .first()
         )
+
+    def update_status(self, scan_id: str, status: str, **fields) -> None:
+        scan = self.get_by_scan_id(scan_id)
+        if scan is None:
+            return
+
+        scan.status = status
+
+        if "total_stocks" in fields:
+            scan.total_stocks = fields["total_stocks"]
+        if "passed_stocks" in fields:
+            scan.passed_stocks = fields["passed_stocks"]
+        if status == "completed":
+            scan.completed_at = datetime.utcnow()
+
+        self._session.flush()

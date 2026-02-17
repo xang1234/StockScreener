@@ -50,6 +50,7 @@ class RatingCategory(str, Enum):
 class ScanStatus(str, Enum):
     """Lifecycle states of a scan."""
 
+    QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -168,6 +169,23 @@ class ResultPage:
 
 
 # ---------------------------------------------------------------------------
+# Progress Reporting
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ProgressEvent:
+    """Append-only progress snapshot for a running scan."""
+
+    current: int
+    total: int
+    passed: int
+    failed: int
+    throughput: float | None = None
+    eta_seconds: float | None = None
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -181,4 +199,5 @@ __all__ = [
     "ScanResultItemDomain",
     "ScanConfig",
     "ResultPage",
+    "ProgressEvent",
 ]

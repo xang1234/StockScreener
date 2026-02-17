@@ -11,6 +11,14 @@ not through method parameters.
 from __future__ import annotations
 
 import abc
+from typing import Protocol
+
+from .models import ProgressEvent
+
+
+# ---------------------------------------------------------------------------
+# Repositories
+# ---------------------------------------------------------------------------
 
 
 class ScanRepository(abc.ABC):
@@ -29,12 +37,37 @@ class ScanRepository(abc.ABC):
         """Return an existing scan matching the idempotency key, or None."""
         ...
 
+    @abc.abstractmethod
+    def update_status(self, scan_id: str, status: str, **fields) -> None:
+        """Update scan status and optional fields (total_stocks, passed_stocks, etc.)."""
+        ...
+
 
 class ScanResultRepository(abc.ABC):
     """Persist and retrieve individual scan results."""
 
     @abc.abstractmethod
     def bulk_insert(self, rows: list[dict]) -> int:
+        ...
+
+    @abc.abstractmethod
+    def persist_orchestrator_results(
+        self, scan_id: str, results: list[tuple[str, dict]]
+    ) -> int:
+        """Persist raw orchestrator output, handling field mapping internally.
+
+        Args:
+            scan_id: Scan identifier.
+            results: ``[(symbol, result_dict), ...]`` pairs from orchestrator.
+
+        Returns:
+            Number of results persisted.
+        """
+        ...
+
+    @abc.abstractmethod
+    def count_by_scan_id(self, scan_id: str) -> int:
+        """Return the number of results already stored for *scan_id*."""
         ...
 
 
@@ -44,6 +77,11 @@ class UniverseRepository(abc.ABC):
     @abc.abstractmethod
     def resolve_symbols(self, universe_def: object) -> list[str]:
         ...
+
+
+# ---------------------------------------------------------------------------
+# Infrastructure services
+# ---------------------------------------------------------------------------
 
 
 class TaskDispatcher(abc.ABC):
@@ -68,4 +106,42 @@ class StockDataProvider(abc.ABC):
     def prepare_data_bulk(
         self, symbols: list[str], requirements: object
     ) -> dict[str, object]:
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Workflow collaborators
+# ---------------------------------------------------------------------------
+
+
+class ProgressSink(abc.ABC):
+    """Report scan progress to the outside world (Celery, WebSocket, log, …)."""
+
+    @abc.abstractmethod
+    def emit(self, event: ProgressEvent) -> None:
+        ...
+
+
+class CancellationToken(abc.ABC):
+    """Check whether the current operation has been requested to stop."""
+
+    @abc.abstractmethod
+    def is_cancelled(self) -> bool:
+        ...
+
+
+class StockScanner(Protocol):
+    """Structural type satisfied by :class:`ScanOrchestrator`.
+
+    Using a Protocol lets the use case depend on the *shape* of the
+    orchestrator without importing its concrete class.
+    """
+
+    def scan_stock_multi(
+        self,
+        symbol: str,
+        screener_names: list[str],
+        criteria: dict | None = ...,
+        composite_method: str = ...,
+    ) -> dict:
         ...

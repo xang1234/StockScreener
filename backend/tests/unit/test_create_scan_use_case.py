@@ -46,10 +46,23 @@ class FakeScanRepository(ScanRepository):
             None,
         )
 
+    def update_status(self, scan_id: str, status: str, **fields) -> None:
+        rec = self.get_by_scan_id(scan_id)
+        if rec is not None:
+            rec.status = status
+
 
 class FakeScanResultRepository(ScanResultRepository):
     def bulk_insert(self, rows: list[dict]) -> int:
         return len(rows)
+
+    def persist_orchestrator_results(
+        self, scan_id: str, results: list[tuple[str, dict]]
+    ) -> int:
+        return len(results)
+
+    def count_by_scan_id(self, scan_id: str) -> int:
+        return 0
 
 
 class FakeUniverseRepository(UniverseRepository):
