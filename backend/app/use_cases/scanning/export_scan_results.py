@@ -6,10 +6,12 @@ No HTTP, no ORM — just business logic for formatting scan results.
 
 from __future__ import annotations
 
+import copy
 import csv
 import io
 import math
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from app.domain.common.errors import EntityNotFoundError
@@ -178,8 +180,8 @@ class ExportScanResultsUseCase:
             if scan is None:
                 raise EntityNotFoundError("Scan", query.scan_id)
 
-            # Build effective filters
-            filters = query.filters
+            # Build effective filters — copy to avoid mutating the frozen query
+            filters = copy.copy(query.filters)
             if query.passes_only:
                 filters.add_categorical(
                     "rating", ("Strong Buy", "Buy")
@@ -203,9 +205,6 @@ class ExportScanResultsUseCase:
         label = getattr(scan, "scan_id", query.scan_id)
         # Truncate long scan IDs for filename readability
         short_label = label[:12] if len(label) > 12 else label
-
-        from datetime import datetime
-
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"scan_{short_label}_{timestamp}.{ext}"
 

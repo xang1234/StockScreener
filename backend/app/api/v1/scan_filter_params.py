@@ -14,6 +14,7 @@ from dateutil.relativedelta import relativedelta
 from fastapi import Query
 
 from app.domain.scanning.filter_spec import (
+    FilterMode,
     FilterSpec,
     SortOrder,
     SortSpec,
@@ -211,9 +212,9 @@ def parse_scan_filters(
     f.add_range("gap_percent", min_gap_percent, max_gap_percent)
     f.add_range("volume_surge", min_volume_surge, max_volume_surge)
 
-    # Stage (categorical with single value)
+    # Stage (exact integer match via range)
     if stage is not None:
-        f.add_categorical("stage", (str(stage),))
+        f.add_range("stage", stage, stage)
 
     # Categorical filters
     if ratings:
@@ -221,15 +222,11 @@ def parse_scan_filters(
         f.add_categorical("rating", rating_list)
 
     if ibd_industries:
-        from app.domain.scanning.filter_spec import FilterMode
-
         industry_list = tuple(i.strip() for i in ibd_industries.split(","))
         mode = FilterMode.EXCLUDE if ibd_industries_mode == "exclude" else FilterMode.INCLUDE
         f.add_categorical("ibd_industry_group", industry_list, mode)
 
     if gics_sectors:
-        from app.domain.scanning.filter_spec import FilterMode
-
         sector_list = tuple(s.strip() for s in gics_sectors.split(","))
         mode = FilterMode.EXCLUDE if gics_sectors_mode == "exclude" else FilterMode.INCLUDE
         f.add_categorical("gics_sector", sector_list, mode)

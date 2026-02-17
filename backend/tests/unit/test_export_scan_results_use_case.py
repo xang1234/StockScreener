@@ -2,7 +2,6 @@
 
 import csv
 import io
-import math
 
 import pytest
 
@@ -173,7 +172,9 @@ class TestFilterAndSortPassthrough:
         filters.add_range("rs_rating", 70, None)
         uc.execute(uow, _make_query(filters=filters))
 
-        assert repo.last_query_all_args["filters"] is filters
+        # Use equality check (not identity) because use case copies filters
+        passed_filters = repo.last_query_all_args["filters"]
+        assert passed_filters.range_filters == filters.range_filters
 
     def test_passes_sort_to_repository(self):
         repo = ExportableScanResultRepo()
