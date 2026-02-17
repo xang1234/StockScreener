@@ -6,181 +6,24 @@ No DB, no Redis, no Celery — pure domain logic testing.
 from __future__ import annotations
 
 import pytest
-from dataclasses import dataclass, field
-from typing import Any
 
 from app.domain.common.errors import EntityNotFoundError
-from app.domain.common.uow import UnitOfWork
-from app.domain.scanning.models import ProgressEvent, ScanStatus
-from app.domain.scanning.ports import (
-    CancellationToken,
-    ProgressSink,
-    ScanRepository,
-    ScanResultRepository,
-)
+from app.domain.scanning.models import ScanStatus
 from app.use_cases.scanning.run_bulk_scan import (
     RunBulkScanCommand,
     RunBulkScanResult,
     RunBulkScanUseCase,
 )
 
-
-# ---------------------------------------------------------------------------
-# Fakes
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class FakeScan:
-    """Minimal in-memory scan record."""
-
-    scan_id: str
-    status: str = "queued"
-    screener_types: list[str] | None = None
-    composite_method: str | None = None
-    total_stocks: int | None = None
-    passed_stocks: int | None = None
-    completed_at: Any = None
-    idempotency_key: str | None = None
-
-
-class FakeScanRepository(ScanRepository):
-    def __init__(self) -> None:
-        self.scans: dict[str, FakeScan] = {}
-        self.status_history: list[tuple[str, str]] = []
-
-    def create(self, *, scan_id: str, **fields) -> FakeScan:
-        scan = FakeScan(scan_id=scan_id, **fields)
-        self.scans[scan_id] = scan
-        return scan
-
-    def get_by_scan_id(self, scan_id: str) -> FakeScan | None:
-        return self.scans.get(scan_id)
-
-    def get_by_idempotency_key(self, key: str) -> FakeScan | None:
-        for s in self.scans.values():
-            if s.idempotency_key == key:
-                return s
-        return None
-
-    def update_status(self, scan_id: str, status: str, **fields) -> None:
-        scan = self.scans.get(scan_id)
-        if scan is None:
-            return
-        scan.status = status
-        if "total_stocks" in fields:
-            scan.total_stocks = fields["total_stocks"]
-        if "passed_stocks" in fields:
-            scan.passed_stocks = fields["passed_stocks"]
-        self.status_history.append((scan_id, status))
-
-
-class FakeScanResultRepository(ScanResultRepository):
-    def __init__(self) -> None:
-        self.rows: list[dict] = []
-        self._persisted_results: list[tuple[str, str, dict]] = []
-
-    def bulk_insert(self, rows: list[dict]) -> int:
-        self.rows.extend(rows)
-        return len(rows)
-
-    def persist_orchestrator_results(
-        self, scan_id: str, results: list[tuple[str, dict]]
-    ) -> int:
-        for symbol, result in results:
-            self._persisted_results.append((scan_id, symbol, result))
-        return len(results)
-
-    def count_by_scan_id(self, scan_id: str) -> int:
-        return sum(1 for sid, _, _ in self._persisted_results if sid == scan_id)
-
-    def query(self, scan_id, spec, *, include_sparklines=True):
-        from app.domain.scanning.models import ResultPage
-        return ResultPage(items=(), total=0, page=1, per_page=50)
-
-    def get_filter_options(self, scan_id):
-        from app.domain.scanning.models import FilterOptions
-        return FilterOptions(ibd_industries=(), gics_sectors=(), ratings=())
-
-    def get_by_symbol(self, scan_id, symbol):
-        return None
-
-
-class FakeUniverseRepository:
-    def resolve_symbols(self, universe_def: object) -> list[str]:
-        return []
-
-
-class FakeUnitOfWork(UnitOfWork):
-    def __init__(
-        self,
-        scans: FakeScanRepository | None = None,
-        scan_results: FakeScanResultRepository | None = None,
-    ) -> None:
-        self.scans = scans or FakeScanRepository()
-        self.scan_results = scan_results or FakeScanResultRepository()
-        self.universe = FakeUniverseRepository()
-        self.committed = 0
-        self.rolled_back = 0
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None:
-            self.rollback()
-
-    def commit(self):
-        self.committed += 1
-
-    def rollback(self):
-        self.rolled_back += 1
-
-
-class FakeScanner:
-    """Fake StockScanner that returns configurable results."""
-
-    def __init__(self, results: dict[str, dict] | None = None) -> None:
-        self._results = results or {}
-        self.calls: list[str] = []
-
-    def scan_stock_multi(
-        self,
-        symbol: str,
-        screener_names: list[str],
-        criteria: dict | None = None,
-        composite_method: str = "weighted_average",
-    ) -> dict:
-        self.calls.append(symbol)
-        return self._results.get(
-            symbol,
-            {
-                "composite_score": 75.0,
-                "rating": "Buy",
-                "passes_template": True,
-                "current_price": 100.0,
-            },
-        )
-
-
-class FakeProgressSink(ProgressSink):
-    def __init__(self) -> None:
-        self.events: list[ProgressEvent] = []
-
-    def emit(self, event: ProgressEvent) -> None:
-        self.events.append(event)
-
-
-class FakeCancellationToken(CancellationToken):
-    def __init__(self, cancel_after: int | None = None) -> None:
-        self._cancel_after = cancel_after
-        self._checks = 0
-
-    def is_cancelled(self) -> bool:
-        self._checks += 1
-        if self._cancel_after is not None and self._checks > self._cancel_after:
-            return True
-        return False
+from tests.unit.use_cases.conftest import (
+    FakeCancellationToken,
+    FakeProgressSink,
+    FakeScan,
+    FakeScanRepository,
+    FakeScanResultRepository,
+    FakeScanner,
+    FakeUnitOfWork,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +114,7 @@ class TestRunBulkScanHappyPath:
         )
         uc.execute(uow, cmd, FakeProgressSink(), FakeCancellationToken())
 
-        # 5 symbols → 3 chunks (2+2+1) → 5 results persisted
+        # 5 symbols -> 3 chunks (2+2+1) -> 5 results persisted
         assert result_repo.count_by_scan_id("s1") == 5
 
     def test_progress_events_emitted_per_chunk(self):
@@ -287,7 +130,7 @@ class TestRunBulkScanHappyPath:
         )
         _make_use_case().execute(uow, cmd, progress, FakeCancellationToken())
 
-        # 3 chunks → 3 progress events
+        # 3 chunks -> 3 progress events
         assert len(progress.events) == 3
         assert progress.events[-1].current == 5
         assert progress.events[-1].total == 5
@@ -300,7 +143,7 @@ class TestRunBulkScanHappyPath:
         cmd = RunBulkScanCommand(scan_id="s1", symbols=["AAPL"])
         _make_use_case().execute(uow, cmd, FakeProgressSink(), FakeCancellationToken())
 
-        # Should transition: running → completed
+        # Should transition: running -> completed
         assert scan_repo.status_history == [
             ("s1", "running"),
             ("s1", "completed"),
@@ -474,7 +317,10 @@ class TestErrorHandling:
 
         class ExplodingScanner:
             calls = []
-            def scan_stock_multi(self, symbol, screener_names, criteria=None, composite_method="weighted_average"):
+
+            def scan_stock_multi(
+                self, symbol, screener_names, criteria=None, composite_method="weighted_average"
+            ):
                 self.calls.append(symbol)
                 if symbol == "MSFT":
                     raise RuntimeError("boom")
@@ -553,7 +399,7 @@ class TestProgressEvents:
         cmd = RunBulkScanCommand(scan_id="s1", symbols=["A"])
         _make_use_case().execute(uow, cmd, progress, FakeCancellationToken())
 
-        # All symbols already processed → no chunks → no progress events
+        # All symbols already processed -> no chunks -> no progress events
         assert len(progress.events) == 0
 
 

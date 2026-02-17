@@ -16,40 +16,12 @@ from app.use_cases.scanning.get_scan_results import (
     GetScanResultsUseCase,
 )
 
-from tests.unit.scanning_fakes import (
+from tests.unit.use_cases.conftest import (
     FakeScanResultRepository,
     FakeUnitOfWork,
     make_domain_item,
     setup_scan,
 )
-
-
-# ── Specialised fake ────────────────────────────────────────────────────
-
-
-class QueryableScanResultRepo(FakeScanResultRepository):
-    """Fake that stores items and returns them from query()."""
-
-    def __init__(self, items: list[ScanResultItemDomain] | None = None):
-        self._items = items or []
-        self.last_query_args: dict | None = None
-
-    def count_by_scan_id(self, scan_id: str) -> int:
-        return len(self._items)
-
-    def query(self, scan_id, spec, *, include_sparklines=True):
-        self.last_query_args = {
-            "scan_id": scan_id,
-            "spec": spec,
-            "include_sparklines": include_sparklines,
-        }
-        page_items = self._items[spec.page.offset : spec.page.offset + spec.page.limit]
-        return ResultPage(
-            items=tuple(page_items),
-            total=len(self._items),
-            page=spec.page.page,
-            per_page=spec.page.per_page,
-        )
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -69,7 +41,7 @@ class TestHappyPath:
 
     def test_returns_result_page(self):
         items = [make_domain_item("AAPL"), make_domain_item("MSFT")]
-        uow = FakeUnitOfWork(scan_results=QueryableScanResultRepo(items))
+        uow = FakeUnitOfWork(scan_results=FakeScanResultRepository(items=items))
         setup_scan(uow)
         uc = GetScanResultsUseCase()
 
@@ -83,7 +55,7 @@ class TestHappyPath:
         assert result.page.items[1].symbol == "MSFT"
 
     def test_passes_scan_id_to_repository(self):
-        repo = QueryableScanResultRepo()
+        repo = FakeScanResultRepository()
         uow = FakeUnitOfWork(scan_results=repo)
         setup_scan(uow, "scan-xyz")
         uc = GetScanResultsUseCase()
@@ -93,7 +65,7 @@ class TestHappyPath:
         assert repo.last_query_args["scan_id"] == "scan-xyz"
 
     def test_passes_query_spec_to_repository(self):
-        repo = QueryableScanResultRepo()
+        repo = FakeScanResultRepository()
         uow = FakeUnitOfWork(scan_results=repo)
         setup_scan(uow)
         uc = GetScanResultsUseCase()
@@ -107,7 +79,7 @@ class TestHappyPath:
         assert repo.last_query_args["spec"] is spec
 
     def test_passes_include_sparklines_flag(self):
-        repo = QueryableScanResultRepo()
+        repo = FakeScanResultRepository()
         uow = FakeUnitOfWork(scan_results=repo)
         setup_scan(uow)
         uc = GetScanResultsUseCase()
@@ -117,7 +89,7 @@ class TestHappyPath:
         assert repo.last_query_args["include_sparklines"] is False
 
     def test_empty_results_returns_empty_page(self):
-        uow = FakeUnitOfWork(scan_results=QueryableScanResultRepo([]))
+        uow = FakeUnitOfWork(scan_results=FakeScanResultRepository(items=[]))
         setup_scan(uow)
         uc = GetScanResultsUseCase()
 
@@ -128,7 +100,7 @@ class TestHappyPath:
 
     def test_pagination_metadata(self):
         items = [make_domain_item(f"SYM{i}") for i in range(75)]
-        uow = FakeUnitOfWork(scan_results=QueryableScanResultRepo(items))
+        uow = FakeUnitOfWork(scan_results=FakeScanResultRepository(items=items))
         setup_scan(uow)
         uc = GetScanResultsUseCase()
 
@@ -167,7 +139,7 @@ class TestDefaultQuerySpec:
     """Default query spec uses sensible defaults."""
 
     def test_default_query_spec_applied(self):
-        repo = QueryableScanResultRepo()
+        repo = FakeScanResultRepository()
         uow = FakeUnitOfWork(scan_results=repo)
         setup_scan(uow)
         uc = GetScanResultsUseCase()
@@ -181,7 +153,7 @@ class TestDefaultQuerySpec:
         assert spec.page.per_page == 50
 
     def test_default_include_sparklines_is_true(self):
-        repo = QueryableScanResultRepo()
+        repo = FakeScanResultRepository()
         uow = FakeUnitOfWork(scan_results=repo)
         setup_scan(uow)
         uc = GetScanResultsUseCase()
