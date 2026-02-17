@@ -68,6 +68,10 @@ class FakeScanResultRepository(ScanResultRepository):
         from app.domain.scanning.models import ResultPage
         return ResultPage(items=(), total=0, page=1, per_page=50)
 
+    def get_filter_options(self, scan_id):
+        from app.domain.scanning.models import FilterOptions
+        return FilterOptions(ibd_industries=(), gics_sectors=(), ratings=())
+
 
 class FakeUniverseRepository(UniverseRepository):
     def __init__(self, symbols: list[str] | None = None):

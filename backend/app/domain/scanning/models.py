@@ -149,6 +149,20 @@ class ScanConfig:
 
 
 @dataclass(frozen=True)
+class FilterOptions:
+    """Available categorical filter values for a scan's results.
+
+    Used to populate frontend dropdown/checkbox filters.
+    Each field contains the *sorted, de-duplicated* values
+    actually present in the scan (not all possible values).
+    """
+
+    ibd_industries: tuple[str, ...]
+    gics_sectors: tuple[str, ...]
+    ratings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ResultPage:
     """Paginated result set with metadata.
 
@@ -198,6 +212,7 @@ __all__ = [
     "ScreenerOutputDomain",
     "ScanResultItemDomain",
     "ScanConfig",
+    "FilterOptions",
     "ResultPage",
     "ProgressEvent",
 ]

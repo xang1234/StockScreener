@@ -12,7 +12,7 @@ from app.domain.scanning.filter_spec import (
     SortOrder,
     SortSpec,
 )
-from app.domain.scanning.models import ResultPage, ScanResultItemDomain
+from app.domain.scanning.models import FilterOptions, ResultPage, ScanResultItemDomain
 from app.domain.scanning.ports import (
     ScanRepository,
     ScanResultRepository,
@@ -101,6 +101,9 @@ class FakeScanResultRepository(ScanResultRepository):
             page=spec.page.page,
             per_page=spec.page.per_page,
         )
+
+    def get_filter_options(self, scan_id):
+        return FilterOptions(ibd_industries=(), gics_sectors=(), ratings=())
 
 
 class FakeUniverseRepository(UniverseRepository):

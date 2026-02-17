@@ -14,7 +14,7 @@ import abc
 from typing import Protocol
 
 from .filter_spec import QuerySpec
-from .models import ProgressEvent, ResultPage
+from .models import FilterOptions, ProgressEvent, ResultPage
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +88,19 @@ class ScanResultRepository(abc.ABC):
 
         Returns:
             A :class:`ResultPage` with the matching items and total count.
+        """
+        ...
+
+    @abc.abstractmethod
+    def get_filter_options(self, scan_id: str) -> FilterOptions:
+        """Return distinct categorical values for filtering a scan's results.
+
+        Args:
+            scan_id: Scan identifier (must exist — caller validates).
+
+        Returns:
+            A :class:`FilterOptions` with sorted, de-duplicated values
+            for each categorical column.
         """
         ...
 

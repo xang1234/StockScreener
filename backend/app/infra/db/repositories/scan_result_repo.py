@@ -9,7 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.domain.scanning.filter_spec import QuerySpec
-from app.domain.scanning.models import ResultPage, ScanResultItemDomain
+from app.domain.scanning.models import FilterOptions, ResultPage, ScanResultItemDomain
 from app.domain.scanning.ports import ScanResultRepository
 from app.infra.query.scan_result_query import apply_filters, apply_sort_and_paginate
 from app.infra.serialization import convert_numpy_types
@@ -186,6 +186,29 @@ class SqlScanResultRepository(ScanResultRepository):
             total=total,
             page=spec.page.page,
             per_page=spec.page.per_page,
+        )
+
+    def get_filter_options(self, scan_id: str) -> FilterOptions:
+        """Query distinct categorical values for filter dropdowns."""
+
+        def _distinct_non_empty(column):
+            """Return sorted unique non-null, non-empty values for *column*."""
+            rows = (
+                self._session.query(column)
+                .filter(
+                    ScanResult.scan_id == scan_id,
+                    column.isnot(None),
+                    column != "",
+                )
+                .distinct()
+                .all()
+            )
+            return tuple(sorted(v for (v,) in rows if v))
+
+        return FilterOptions(
+            ibd_industries=_distinct_non_empty(ScanResult.ibd_industry_group),
+            gics_sectors=_distinct_non_empty(ScanResult.gics_sector),
+            ratings=_distinct_non_empty(ScanResult.rating),
         )
 
 

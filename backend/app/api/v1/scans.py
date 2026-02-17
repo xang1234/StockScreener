@@ -20,10 +20,11 @@ from ...models.scan_result import Scan, ScanResult
 from ...models.stock_universe import StockUniverse
 from pydantic import ValidationError
 from ...schemas.universe import UniverseDefinition
-from ...wiring.bootstrap import get_uow, get_create_scan_use_case
+from ...wiring.bootstrap import get_uow, get_create_scan_use_case, get_get_filter_options_use_case
 from ...use_cases.scanning.create_scan import CreateScanCommand, CreateScanUseCase
+from ...use_cases.scanning.get_filter_options import GetFilterOptionsQuery, GetFilterOptionsUseCase
 from ...infra.db.uow import SqlUnitOfWork
-from ...domain.common.errors import ValidationError as DomainValidationError
+from ...domain.common.errors import EntityNotFoundError, ValidationError as DomainValidationError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -1279,59 +1280,28 @@ class FilterOptionsResponse(BaseModel):
 @router.get("/{scan_id}/filter-options", response_model=FilterOptionsResponse)
 async def get_filter_options(
     scan_id: str,
-    db: Session = Depends(get_db)
+    uow: SqlUnitOfWork = Depends(get_uow),
+    use_case: GetFilterOptionsUseCase = Depends(get_get_filter_options_use_case),
 ):
     """
     Get unique values for categorical filters from this scan's results.
 
     Returns lists of unique IBD industries, GICS sectors, and ratings
     that exist in the scan results, for populating filter dropdowns.
-
-    Args:
-        scan_id: Scan UUID
-        db: Database session
-
-    Returns:
-        Filter options with ibd_industries, gics_sectors, ratings arrays
     """
     try:
-        # Verify scan exists
-        scan = db.query(Scan).filter(Scan.scan_id == scan_id).first()
-        if not scan:
-            raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
-
-        # Query distinct IBD industries
-        industries = db.query(ScanResult.ibd_industry_group).filter(
-            ScanResult.scan_id == scan_id,
-            ScanResult.ibd_industry_group.isnot(None),
-            ScanResult.ibd_industry_group != ''
-        ).distinct().all()
-
-        # Query distinct GICS sectors
-        sectors = db.query(ScanResult.gics_sector).filter(
-            ScanResult.scan_id == scan_id,
-            ScanResult.gics_sector.isnot(None),
-            ScanResult.gics_sector != ''
-        ).distinct().all()
-
-        # Query distinct ratings
-        ratings_query = db.query(ScanResult.rating).filter(
-            ScanResult.scan_id == scan_id,
-            ScanResult.rating.isnot(None),
-            ScanResult.rating != ''
-        ).distinct().all()
-
-        return FilterOptionsResponse(
-            ibd_industries=sorted([i[0] for i in industries if i[0]]),
-            gics_sectors=sorted([s[0] for s in sectors if s[0]]),
-            ratings=[r[0] for r in ratings_query if r[0]]
-        )
-
-    except HTTPException:
-        raise
+        result = use_case.execute(uow, GetFilterOptionsQuery(scan_id=scan_id))
+    except EntityNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Error getting filter options: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error getting filter options: {str(e)}")
+
+    return FilterOptionsResponse(
+        ibd_industries=list(result.options.ibd_industries),
+        gics_sectors=list(result.options.gics_sectors),
+        ratings=list(result.options.ratings),
+    )
 
 
 @router.get("/{scan_id}/result/{symbol}", response_model=ScanResultItem)
