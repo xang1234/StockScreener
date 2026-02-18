@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from typing import Optional, List
 from pydantic import ValidationError
-from datetime import datetime
 import logging
 
 from ...schemas.scanning import (
