@@ -155,6 +155,27 @@ def apply_sort_and_paginate(
     return rows, total
 
 
+def apply_sort_all(query: Query, sort: SortSpec) -> list:
+    """Apply sort and return ALL matching rows (no pagination).
+
+    Used by export-style queries that need every row.
+    Unlike the legacy scan_result_query, no Python-sort fallback is needed
+    because all feature store fields are SQL-sortable via json_extract.
+    """
+    col = _COLUMN_MAP.get(sort.field)
+    if col is not None:
+        order_fn = asc if sort.order == SortOrder.ASC else desc
+        query = query.order_by(order_fn(col))
+    elif sort.field in _JSON_FIELD_MAP:
+        json_path = _JSON_FIELD_MAP[sort.field]
+        json_val = func.json_extract(StockFeatureDaily.details_json, json_path)
+        order_fn = asc if sort.order == SortOrder.ASC else desc
+        query = query.order_by(order_fn(json_val))
+    else:
+        query = query.order_by(desc(StockFeatureDaily.composite_score))
+    return query.all()
+
+
 # ── Private helpers ─────────────────────────────────────────────────────
 
 

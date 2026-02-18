@@ -19,14 +19,18 @@ from app.domain.feature_store.models import (
 )
 from app.domain.feature_store.ports import FeatureStoreRepository
 from app.domain.feature_store.quality import DQInputs
-from app.domain.scanning.models import ResultPage, ScanResultItemDomain
+from app.domain.scanning.models import FilterOptions, ResultPage, ScanResultItemDomain
 from app.infra.db.models.feature_store import (
     FeatureRun,
     FeatureRunPointer,
     FeatureRunUniverseSymbol,
     StockFeatureDaily,
 )
-from app.infra.query.feature_store_query import apply_filters, apply_sort_and_paginate
+from app.infra.query.feature_store_query import (
+    apply_filters,
+    apply_sort_all,
+    apply_sort_and_paginate,
+)
 from app.models.stock_universe import StockUniverse
 
 _BATCH_SIZE = 500
@@ -241,6 +245,208 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
             total=total,
             page=spec.page.page,
             per_page=spec.page.per_page,
+        )
+
+    def get_filter_options_for_run(self, run_id: int) -> FilterOptions:
+        """Return distinct filter dropdown values from the feature store.
+
+        Bridge method for dual-source queries — matches the return type
+        of ``ScanResultRepository.get_filter_options()``.
+        """
+        run = self._session.get(FeatureRun, run_id)
+        if run is None:
+            raise EntityNotFoundError("FeatureRun", run_id)
+
+        # Ratings from indexed integer column (fast)
+        rating_rows = (
+            self._session.query(StockFeatureDaily.overall_rating)
+            .filter(
+                StockFeatureDaily.run_id == run_id,
+                StockFeatureDaily.overall_rating.isnot(None),
+            )
+            .distinct()
+            .all()
+        )
+        ratings = tuple(sorted(
+            INT_TO_RATING[r.overall_rating]
+            for r in rating_rows
+            if r.overall_rating in INT_TO_RATING
+        ))
+
+        # Industries and sectors from JSON
+        industry_col = func.json_extract(
+            StockFeatureDaily.details_json, "$.ibd_industry_group"
+        )
+        industry_rows = (
+            self._session.query(industry_col)
+            .filter(
+                StockFeatureDaily.run_id == run_id,
+                industry_col.isnot(None),
+                industry_col != "",
+            )
+            .distinct()
+            .all()
+        )
+        industries = tuple(sorted(r[0] for r in industry_rows))
+
+        sector_col = func.json_extract(
+            StockFeatureDaily.details_json, "$.gics_sector"
+        )
+        sector_rows = (
+            self._session.query(sector_col)
+            .filter(
+                StockFeatureDaily.run_id == run_id,
+                sector_col.isnot(None),
+                sector_col != "",
+            )
+            .distinct()
+            .all()
+        )
+        sectors = tuple(sorted(r[0] for r in sector_rows))
+
+        return FilterOptions(
+            ibd_industries=industries,
+            gics_sectors=sectors,
+            ratings=ratings,
+        )
+
+    def get_by_symbol_for_run(
+        self,
+        run_id: int,
+        symbol: str,
+        *,
+        include_sparklines: bool = True,
+    ) -> ScanResultItemDomain | None:
+        """Look up a single symbol in a feature run.
+
+        Bridge method for dual-source queries — matches the return type
+        of ``ScanResultRepository.get_by_symbol()``.
+        Returns None if symbol not found; raises EntityNotFoundError if
+        the run itself doesn't exist.
+        """
+        run = self._session.get(FeatureRun, run_id)
+        if run is None:
+            raise EntityNotFoundError("FeatureRun", run_id)
+
+        result = (
+            self._session.query(StockFeatureDaily, StockUniverse.name)
+            .outerjoin(
+                StockUniverse,
+                StockFeatureDaily.symbol == StockUniverse.symbol,
+            )
+            .filter(
+                StockFeatureDaily.run_id == run_id,
+                StockFeatureDaily.symbol == symbol,
+            )
+            .first()
+        )
+        if result is None:
+            return None
+
+        row, company_name = result
+        return _map_feature_to_scan_result(row, company_name, include_sparklines)
+
+    def get_peers_by_industry_for_run(
+        self,
+        run_id: int,
+        ibd_industry_group: str,
+    ) -> tuple[ScanResultItemDomain, ...]:
+        """Return all stocks in the same IBD industry group for a feature run.
+
+        Bridge method for dual-source queries — matches the return type
+        of ``ScanResultRepository.get_peers_by_industry()``.
+        """
+        run = self._session.get(FeatureRun, run_id)
+        if run is None:
+            raise EntityNotFoundError("FeatureRun", run_id)
+
+        industry_col = func.json_extract(
+            StockFeatureDaily.details_json, "$.ibd_industry_group"
+        )
+        rows = (
+            self._session.query(StockFeatureDaily, StockUniverse.name)
+            .outerjoin(
+                StockUniverse,
+                StockFeatureDaily.symbol == StockUniverse.symbol,
+            )
+            .filter(
+                StockFeatureDaily.run_id == run_id,
+                industry_col == ibd_industry_group,
+            )
+            .order_by(StockFeatureDaily.composite_score.desc())
+            .all()
+        )
+        return tuple(
+            _map_feature_to_scan_result(row, company_name, include_sparklines=False)
+            for row, company_name in rows
+        )
+
+    def get_peers_by_sector_for_run(
+        self,
+        run_id: int,
+        gics_sector: str,
+    ) -> tuple[ScanResultItemDomain, ...]:
+        """Return all stocks in the same GICS sector for a feature run.
+
+        Bridge method for dual-source queries — matches the return type
+        of ``ScanResultRepository.get_peers_by_sector()``.
+        """
+        run = self._session.get(FeatureRun, run_id)
+        if run is None:
+            raise EntityNotFoundError("FeatureRun", run_id)
+
+        sector_col = func.json_extract(
+            StockFeatureDaily.details_json, "$.gics_sector"
+        )
+        rows = (
+            self._session.query(StockFeatureDaily, StockUniverse.name)
+            .outerjoin(
+                StockUniverse,
+                StockFeatureDaily.symbol == StockUniverse.symbol,
+            )
+            .filter(
+                StockFeatureDaily.run_id == run_id,
+                sector_col == gics_sector,
+            )
+            .order_by(StockFeatureDaily.composite_score.desc())
+            .all()
+        )
+        return tuple(
+            _map_feature_to_scan_result(row, company_name, include_sparklines=False)
+            for row, company_name in rows
+        )
+
+    def query_all_as_scan_results(
+        self,
+        run_id: int,
+        filters: FilterSpec,
+        sort: SortSpec,
+        *,
+        include_sparklines: bool = False,
+    ) -> tuple[ScanResultItemDomain, ...]:
+        """Query feature store and return ALL results (no pagination).
+
+        Bridge method for dual-source export queries — matches the return
+        type of ``ScanResultRepository.query_all()``.
+        """
+        run = self._session.get(FeatureRun, run_id)
+        if run is None:
+            raise EntityNotFoundError("FeatureRun", run_id)
+
+        q = (
+            self._session.query(StockFeatureDaily, StockUniverse.name)
+            .outerjoin(
+                StockUniverse,
+                StockFeatureDaily.symbol == StockUniverse.symbol,
+            )
+            .filter(StockFeatureDaily.run_id == run_id)
+        )
+        q = apply_filters(q, filters)
+        rows = apply_sort_all(q, sort)
+
+        return tuple(
+            _map_feature_to_scan_result(row, company_name, include_sparklines)
+            for row, company_name in rows
         )
 
     @staticmethod

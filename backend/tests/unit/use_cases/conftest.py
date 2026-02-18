@@ -512,6 +512,68 @@ class FakeFeatureStoreRepository(FeatureStoreRepository):
             per_page=p.per_page,
         )
 
+    def get_filter_options_for_run(self, run_id):
+        """Bridge method: return distinct filter values for a run."""
+        if run_id not in self._rows:
+            raise EntityNotFoundError("FeatureRun", run_id)
+        from app.domain.feature_store.models import INT_TO_RATING
+
+        rows = self._rows[run_id]
+        ratings = set()
+        industries = set()
+        sectors = set()
+        for r in rows:
+            if r.overall_rating is not None and r.overall_rating in INT_TO_RATING:
+                ratings.add(INT_TO_RATING[r.overall_rating])
+            d = r.details or {}
+            if d.get("ibd_industry_group"):
+                industries.add(d["ibd_industry_group"])
+            if d.get("gics_sector"):
+                sectors.add(d["gics_sector"])
+        return FilterOptions(
+            ibd_industries=tuple(sorted(industries)),
+            gics_sectors=tuple(sorted(sectors)),
+            ratings=tuple(sorted(ratings)),
+        )
+
+    def get_by_symbol_for_run(self, run_id, symbol, *, include_sparklines=True):
+        """Bridge method: look up a single symbol in a run."""
+        if run_id not in self._rows:
+            raise EntityNotFoundError("FeatureRun", run_id)
+        for r in self._rows[run_id]:
+            if r.symbol == symbol:
+                return _make_scan_result_from_feature_row(r)
+        return None
+
+    def get_peers_by_industry_for_run(self, run_id, ibd_industry_group):
+        """Bridge method: return peers in the same IBD industry group."""
+        if run_id not in self._rows:
+            raise EntityNotFoundError("FeatureRun", run_id)
+        return tuple(
+            _make_scan_result_from_feature_row(r)
+            for r in self._rows[run_id]
+            if (r.details or {}).get("ibd_industry_group") == ibd_industry_group
+        )
+
+    def get_peers_by_sector_for_run(self, run_id, gics_sector):
+        """Bridge method: return peers in the same GICS sector."""
+        if run_id not in self._rows:
+            raise EntityNotFoundError("FeatureRun", run_id)
+        return tuple(
+            _make_scan_result_from_feature_row(r)
+            for r in self._rows[run_id]
+            if (r.details or {}).get("gics_sector") == gics_sector
+        )
+
+    def query_all_as_scan_results(self, run_id, filters, sort, *, include_sparklines=False):
+        """Bridge method: return all rows as ScanResultItemDomain (no pagination)."""
+        if run_id not in self._rows:
+            raise EntityNotFoundError("FeatureRun", run_id)
+        return tuple(
+            _make_scan_result_from_feature_row(r)
+            for r in self._rows[run_id]
+        )
+
     def _build_page(self, run_id: int, page: PageSpec | None) -> FeaturePage:
         p = page or PageSpec()
         all_rows = self._rows.get(run_id, [])
@@ -574,6 +636,11 @@ def _make_scan_result_from_feature_row(row: FeatureRow) -> ScanResultItemDomain:
     raw_score = row.composite_score or 0
     clamped = max(0.0, min(100.0, float(raw_score)))
     rating = INT_TO_RATING.get(row.overall_rating, d.get("rating", "Pass"))
+    extended: dict[str, Any] = {"company_name": f"{row.symbol} Inc"}
+    # Propagate classification fields so GetPeers can read them
+    for key in ("ibd_industry_group", "gics_sector"):
+        if key in d:
+            extended[key] = d[key]
     return ScanResultItemDomain(
         symbol=row.symbol,
         composite_score=clamped,
@@ -584,7 +651,7 @@ def _make_scan_result_from_feature_row(row: FeatureRow) -> ScanResultItemDomain:
         composite_method=d.get("composite_method", "weighted_average"),
         screeners_passed=d.get("screeners_passed", 0),
         screeners_total=d.get("screeners_total", 0),
-        extended_fields={"company_name": f"{row.symbol} Inc"},
+        extended_fields=extended,
     )
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import csv
 import io
+import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -18,6 +19,8 @@ from app.domain.common.errors import EntityNotFoundError
 from app.domain.common.uow import UnitOfWork
 from app.domain.scanning.filter_spec import FilterSpec, SortSpec
 from app.domain.scanning.models import ExportFormat, ScanResultItemDomain
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -187,11 +190,39 @@ class ExportScanResultsUseCase:
                     "rating", ("Strong Buy", "Buy")
                 )
 
-            items = uow.scan_results.query_all(
-                scan_id=query.scan_id,
-                filters=filters,
-                sort=query.sort,
-            )
+            if scan.feature_run_id:
+                logger.info(
+                    "Scan %s: routing export to feature_store (run_id=%d)",
+                    query.scan_id,
+                    scan.feature_run_id,
+                )
+                try:
+                    items = uow.feature_store.query_all_as_scan_results(
+                        scan.feature_run_id,
+                        filters,
+                        query.sort,
+                    )
+                except EntityNotFoundError:
+                    logger.warning(
+                        "Feature run %d not found for scan %s, falling back to legacy",
+                        scan.feature_run_id,
+                        query.scan_id,
+                    )
+                    items = uow.scan_results.query_all(
+                        scan_id=query.scan_id,
+                        filters=filters,
+                        sort=query.sort,
+                    )
+            else:
+                logger.debug(
+                    "Scan %s: routing export to legacy scan_results",
+                    query.scan_id,
+                )
+                items = uow.scan_results.query_all(
+                    scan_id=query.scan_id,
+                    filters=filters,
+                    sort=query.sort,
+                )
 
         # Format output
         if query.export_format == ExportFormat.CSV:
