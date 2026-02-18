@@ -10,10 +10,8 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 
 import pytest
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
-from app.database import Base
 from app.domain.common.errors import EntityNotFoundError, InvalidTransitionError
 from app.domain.feature_store.models import (
     FeatureRunDomain,
@@ -29,25 +27,6 @@ from app.infra.db.models.feature_store import (  # noqa: F401 — register model
     StockFeatureDaily,
 )
 from app.infra.db.repositories.feature_run_repo import SqlFeatureRunRepository
-
-
-@pytest.fixture
-def session():
-    """Create an in-memory SQLite session with all feature store tables."""
-    engine = create_engine("sqlite:///:memory:")
-
-    # Enable FK enforcement (SQLite disables by default)
-    @event.listens_for(engine, "connect")
-    def _set_fk_pragma(dbapi_conn, _):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-
-    Base.metadata.create_all(engine)
-    factory = sessionmaker(bind=engine)
-    sess = factory()
-    yield sess
-    sess.close()
 
 
 @pytest.fixture
@@ -199,6 +178,59 @@ class TestPublishAtomically:
         # Still RUNNING — can't publish
         with pytest.raises(InvalidTransitionError):
             repo.publish_atomically(run.id)
+
+    def test_publish_from_quarantined_state(self, repo: SqlFeatureRunRepository, session: Session):
+        """QUARANTINED → PUBLISHED is a valid override transition."""
+        run = repo.start_run(date(2026, 2, 17), RunType.DAILY_SNAPSHOT)
+        repo.mark_completed(run.id, _make_stats())
+        repo.mark_quarantined(
+            run.id,
+            [
+                DQResult(
+                    check_name="row_count",
+                    passed=False,
+                    severity=DQSeverity.CRITICAL,
+                    actual_value=0.5,
+                    threshold=0.9,
+                    message="Row count too low",
+                ),
+            ],
+        )
+
+        result = repo.publish_atomically(run.id)
+
+        assert result.status == RunStatus.PUBLISHED
+        pointer = (
+            session.query(FeatureRunPointer)
+            .filter(FeatureRunPointer.key == "latest_published")
+            .first()
+        )
+        assert pointer is not None
+        assert pointer.run_id == run.id
+
+    def test_rollback_prevents_partial_publish(self, repo: SqlFeatureRunRepository, session: Session):
+        """Atomic crash simulation: commit setup, then flush publish + rollback."""
+        run = repo.start_run(date(2026, 2, 17), RunType.DAILY_SNAPSHOT)
+        repo.mark_completed(run.id, _make_stats())
+        # Commit the "completed" state so it survives rollback
+        session.commit()
+
+        # Publish flushes but we DON'T commit
+        repo.publish_atomically(run.id)
+        # Simulate crash — rollback
+        session.rollback()
+
+        # Status should be reverted to "completed"
+        row = session.get(FeatureRun, run.id)
+        assert row.status == RunStatus.COMPLETED.value
+
+        # Pointer should not exist
+        pointer = (
+            session.query(FeatureRunPointer)
+            .filter(FeatureRunPointer.key == "latest_published")
+            .first()
+        )
+        assert pointer is None
 
 
 class TestGetLatestPublished:
