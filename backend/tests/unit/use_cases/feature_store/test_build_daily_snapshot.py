@@ -73,22 +73,20 @@ def _make_uow(
 
 class TestMapOrchestratorToFeatureRow:
     def test_maps_all_fields(self):
-        row = _map_orchestrator_to_feature_row(
-            "AAPL",
-            AS_OF,
-            {
-                "composite_score": 85.5,
-                "rating": "Strong Buy",
-                "screeners_passed": 2,
-                "details": {"screeners": {}},
-            },
-        )
+        input_dict = {
+            "composite_score": 85.5,
+            "rating": "Strong Buy",
+            "screeners_passed": 2,
+            "details": {"screeners": {}},
+        }
+        row = _map_orchestrator_to_feature_row("AAPL", AS_OF, input_dict)
         assert row.symbol == "AAPL"
         assert row.as_of_date == AS_OF
         assert row.composite_score == 85.5
         assert row.overall_rating == 5  # Strong Buy → 5
         assert row.passes_count == 2
-        assert row.details == {"screeners": {}}
+        # details stores the FULL orchestrator dict (not just the nested "details" key)
+        assert row.details is input_dict
 
     def test_unknown_rating_defaults_to_watch(self):
         row = _map_orchestrator_to_feature_row(
@@ -100,7 +98,8 @@ class TestMapOrchestratorToFeatureRow:
         row = _map_orchestrator_to_feature_row("X", AS_OF, {})
         assert row.composite_score is None
         assert row.passes_count is None
-        assert row.details is None
+        # details is the full dict (empty but not None)
+        assert row.details == {}
 
     def test_all_rating_values(self):
         for rating, expected_int in [

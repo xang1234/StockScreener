@@ -180,6 +180,25 @@ class FeaturePage:
 # Public API
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Rating ↔ int mappings (single source of truth)
+# ---------------------------------------------------------------------------
+
+RATING_TO_INT: dict[str, int] = {
+    "Strong Buy": 5,
+    "Buy": 4,
+    "Watch": 3,
+    "Pass": 2,
+    "Error": 1,
+}
+
+INT_TO_RATING: dict[int, str] = {v: k for k, v in RATING_TO_INT.items()}
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 __all__ = [
     "RunStatus",
     "RunType",
@@ -191,4 +210,6 @@ __all__ = [
     "FeatureRowWrite",
     "FeatureRow",
     "FeaturePage",
+    "RATING_TO_INT",
+    "INT_TO_RATING",
 ]

@@ -492,6 +492,26 @@ class FakeFeatureStoreRepository(FeatureStoreRepository):
             result_symbols=result_symbols,
         )
 
+    def query_run_as_scan_results(self, run_id, spec, *, include_sparklines=True):
+        """Bridge method for dual-source tests."""
+        if run_id not in self._rows:
+            raise EntityNotFoundError("FeatureRun", run_id)
+        rows = self._rows[run_id]
+        items = tuple(
+            _make_scan_result_from_feature_row(r)
+            for r in rows
+        )
+        p = spec.page
+        start = p.offset
+        end = start + p.limit
+        page_items = items[start:end]
+        return ResultPage(
+            items=page_items,
+            total=len(items),
+            page=p.page,
+            per_page=p.per_page,
+        )
+
     def _build_page(self, run_id: int, page: PageSpec | None) -> FeaturePage:
         p = page or PageSpec()
         all_rows = self._rows.get(run_id, [])
@@ -544,6 +564,28 @@ class FakeUnitOfWork(UnitOfWork):
 # ---------------------------------------------------------------------------
 # Domain object helpers
 # ---------------------------------------------------------------------------
+
+
+def _make_scan_result_from_feature_row(row: FeatureRow) -> ScanResultItemDomain:
+    """Convert a FeatureRow to a ScanResultItemDomain for fake bridge method."""
+    from app.domain.feature_store.models import INT_TO_RATING
+
+    d = row.details or {}
+    raw_score = row.composite_score or 0
+    clamped = max(0.0, min(100.0, float(raw_score)))
+    rating = INT_TO_RATING.get(row.overall_rating, d.get("rating", "Pass"))
+    return ScanResultItemDomain(
+        symbol=row.symbol,
+        composite_score=clamped,
+        rating=rating,
+        current_price=d.get("current_price"),
+        screener_outputs={},
+        screeners_run=d.get("screeners_run", []),
+        composite_method=d.get("composite_method", "weighted_average"),
+        screeners_passed=d.get("screeners_passed", 0),
+        screeners_total=d.get("screeners_total", 0),
+        extended_fields={"company_name": f"{row.symbol} Inc"},
+    )
 
 
 def make_domain_item(

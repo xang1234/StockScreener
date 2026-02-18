@@ -2,8 +2,10 @@
 
 This use case owns the business rules for retrieving scan results:
   1. Verify the scan exists (raise EntityNotFoundError if not)
-  2. Delegate to ScanResultRepository.query() with the QuerySpec
-  3. Return a ResultPage
+  2. Route to the correct data source:
+     - Bound scans (feature_run_id set) → query feature store
+     - Unbound scans (legacy) → query scan_results table
+  3. Return a ResultPage (source-agnostic)
 
 The use case depends ONLY on domain ports — never on SQLAlchemy,
 FastAPI, or any other infrastructure.
@@ -11,12 +13,15 @@ FastAPI, or any other infrastructure.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from app.domain.common.errors import EntityNotFoundError
 from app.domain.common.uow import UnitOfWork
 from app.domain.scanning.filter_spec import QuerySpec
 from app.domain.scanning.models import ResultPage
+
+logger = logging.getLogger(__name__)
 
 
 # ── Query (input) ───────────────────────────────────────────────────────
@@ -56,11 +61,39 @@ class GetScanResultsUseCase:
             if scan is None:
                 raise EntityNotFoundError("Scan", query.scan_id)
 
-            # Delegate to repository
-            result_page = uow.scan_results.query(
-                scan_id=query.scan_id,
-                spec=query.query_spec,
-                include_sparklines=query.include_sparklines,
-            )
+            if scan.feature_run_id:
+                # Feature store path: query pre-computed snapshot
+                logger.info(
+                    "Scan %s: routing to feature_store (run_id=%d)",
+                    query.scan_id,
+                    scan.feature_run_id,
+                )
+                try:
+                    result_page = uow.feature_store.query_run_as_scan_results(
+                        scan.feature_run_id,
+                        query.query_spec,
+                        include_sparklines=query.include_sparklines,
+                    )
+                except EntityNotFoundError:
+                    logger.warning(
+                        "Feature run %d not found for scan %s, falling back to legacy",
+                        scan.feature_run_id,
+                        query.scan_id,
+                    )
+                    result_page = uow.scan_results.query(
+                        scan_id=query.scan_id,
+                        spec=query.query_spec,
+                        include_sparklines=query.include_sparklines,
+                    )
+            else:
+                # Legacy path: query scan_results table
+                logger.debug(
+                    "Scan %s: routing to legacy scan_results", query.scan_id
+                )
+                result_page = uow.scan_results.query(
+                    scan_id=query.scan_id,
+                    spec=query.query_spec,
+                    include_sparklines=query.include_sparklines,
+                )
 
         return GetScanResultsResult(page=result_page)

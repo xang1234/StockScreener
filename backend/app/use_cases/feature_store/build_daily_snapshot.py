@@ -30,6 +30,7 @@ import pandas_market_calendars as mcal
 from app.domain.common.errors import ValidationError
 from app.domain.common.uow import UnitOfWork
 from app.domain.feature_store.models import (
+    RATING_TO_INT,
     FeatureRowWrite,
     RunStats,
     RunStatus,
@@ -70,15 +71,6 @@ def _chunked(seq: Sequence[str], size: int) -> Iterator[list[str]]:
         yield list(seq[i : i + size])
 
 
-_RATING_TO_INT: dict[str, int] = {
-    "Strong Buy": 5,
-    "Buy": 4,
-    "Watch": 3,
-    "Pass": 2,
-    "Error": 1,
-}
-
-
 def _map_orchestrator_to_feature_row(
     symbol: str,
     as_of_date: date,
@@ -87,14 +79,18 @@ def _map_orchestrator_to_feature_row(
     """Map ScanOrchestrator dict output to a FeatureRowWrite domain object.
 
     Pure function — no I/O, fully deterministic.
+
+    Stores the full ``result_dict`` as details so that JSON paths like
+    ``$.rs_rating`` and ``$.minervini_score`` resolve correctly in the
+    feature store query builder.
     """
     return FeatureRowWrite(
         symbol=symbol,
         as_of_date=as_of_date,
         composite_score=result_dict.get("composite_score"),
-        overall_rating=_RATING_TO_INT.get(result_dict.get("rating", ""), 3),
+        overall_rating=RATING_TO_INT.get(result_dict.get("rating", ""), 3),
         passes_count=result_dict.get("screeners_passed"),
-        details=result_dict.get("details"),
+        details=result_dict,
     )
 
 

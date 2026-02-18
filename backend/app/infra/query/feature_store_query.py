@@ -38,14 +38,77 @@ _COLUMN_MAP: dict[str, Any] = {
 }
 
 # JSON details paths for fields stored in details_json.
-# Forward-compatible with G2 dual-source query — these fields come from
-# the scan orchestrator output stored in the details blob.
+# These map domain filter/sort field names to json_extract() paths
+# within the full orchestrator result dict stored as details_json.
 _JSON_FIELD_MAP: dict[str, str] = {
+    # Scores
     "minervini_score": "$.minervini_score",
     "canslim_score": "$.canslim_score",
-    "rs_rating": "$.rs_rating",
+    "ipo_score": "$.ipo_score",
+    "custom_score": "$.custom_score",
+    "volume_breakthrough_score": "$.volume_breakthrough_score",
+    # Price / volume
+    "price": "$.current_price",
+    "current_price": "$.current_price",
+    "volume": "$.avg_dollar_volume",
+    "market_cap": "$.market_cap",
+    # Technicals
     "stage": "$.stage",
     "rating": "$.rating",
+    "rs_rating": "$.rs_rating",
+    "rs_rating_1m": "$.rs_rating_1m",
+    "rs_rating_3m": "$.rs_rating_3m",
+    "rs_rating_12m": "$.rs_rating_12m",
+    "adr_percent": "$.adr_percent",
+    # Fundamentals
+    "eps_growth_qq": "$.eps_growth_qq",
+    "sales_growth_qq": "$.sales_growth_qq",
+    "eps_growth_yy": "$.eps_growth_yy",
+    "sales_growth_yy": "$.sales_growth_yy",
+    "peg_ratio": "$.peg_ratio",
+    "peg": "$.peg_ratio",
+    "eps_rating": "$.eps_rating",
+    # Classification
+    "ibd_industry_group": "$.ibd_industry_group",
+    "ibd_group_rank": "$.ibd_group_rank",
+    "gics_sector": "$.gics_sector",
+    "gics_industry": "$.gics_industry",
+    # Performance
+    "perf_week": "$.perf_week",
+    "perf_month": "$.perf_month",
+    "perf_3m": "$.perf_3m",
+    "perf_6m": "$.perf_6m",
+    # Sparkline meta
+    "rs_trend": "$.rs_trend",
+    "price_change_1d": "$.price_change_1d",
+    "price_trend": "$.price_trend",
+    # Beta
+    "beta": "$.beta",
+    "beta_adj_rs": "$.beta_adj_rs",
+    "beta_adj_rs_1m": "$.beta_adj_rs_1m",
+    "beta_adj_rs_3m": "$.beta_adj_rs_3m",
+    "beta_adj_rs_12m": "$.beta_adj_rs_12m",
+    # Distances
+    "ema_10_distance": "$.ema_10_distance",
+    "ema_20_distance": "$.ema_20_distance",
+    "ema_50_distance": "$.ema_50_distance",
+    "week_52_high_distance": "$.from_52w_high_pct",
+    "week_52_low_distance": "$.above_52w_low_pct",
+    # Episodic pivot
+    "gap_percent": "$.gap_percent",
+    "volume_surge": "$.volume_surge",
+    # IPO / dates
+    "ipo_date": "$.ipo_date",
+    # VCP / details-only fields
+    "vcp_score": "$.vcp_score",
+    "vcp_pivot": "$.vcp_pivot",
+    "vcp_detected": "$.vcp_detected",
+    "vcp_ready_for_breakout": "$.vcp_ready_for_breakout",
+    "ma_alignment": "$.ma_alignment",
+    "stage_name": "$.stage_name",
+    "passes_template": "$.passes_template",
+    "vcp_contraction_ratio": "$.vcp_contraction_ratio",
+    "vcp_atr_score": "$.vcp_atr_score",
 }
 
 
@@ -120,14 +183,20 @@ def _apply_range_filter(query: Query, rf: RangeFilter) -> Query:
 
 
 def _apply_categorical_filter(query: Query, cf: CategoricalFilter) -> Query:
-    """Apply an include/exclude categorical filter on a SQL column."""
+    """Apply an include/exclude categorical filter on a SQL column or JSON field."""
     col = _COLUMN_MAP.get(cf.field)
-    if col is None:
-        return query  # unknown field — skip
-    if cf.mode == FilterMode.EXCLUDE:
-        query = query.filter(~col.in_(cf.values))
-    else:
-        query = query.filter(col.in_(cf.values))
+    if col is not None:
+        if cf.mode == FilterMode.EXCLUDE:
+            query = query.filter(~col.in_(cf.values))
+        else:
+            query = query.filter(col.in_(cf.values))
+    elif cf.field in _JSON_FIELD_MAP:
+        json_path = _JSON_FIELD_MAP[cf.field]
+        json_val = func.json_extract(StockFeatureDaily.details_json, json_path)
+        if cf.mode == FilterMode.EXCLUDE:
+            query = query.filter(~json_val.in_(cf.values))
+        else:
+            query = query.filter(json_val.in_(cf.values))
     return query
 
 
@@ -147,8 +216,12 @@ def _apply_boolean_filter(query: Query, bf: BooleanFilter) -> Query:
 
 
 def _apply_text_search(query: Query, ts: TextSearchFilter) -> Query:
-    """Apply a LIKE text search on a SQL column."""
+    """Apply a LIKE text search on a SQL column or JSON field."""
     col = _COLUMN_MAP.get(ts.field)
     if col is not None:
         query = query.filter(col.ilike(f"%{ts.pattern}%"))
+    elif ts.field in _JSON_FIELD_MAP:
+        json_path = _JSON_FIELD_MAP[ts.field]
+        json_val = func.json_extract(StockFeatureDaily.details_json, json_path)
+        query = query.filter(json_val.ilike(f"%{ts.pattern}%"))
     return query

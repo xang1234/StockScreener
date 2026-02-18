@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from app.domain.common.errors import EntityNotFoundError
-from app.domain.common.query import FilterSpec, PageSpec, SortSpec
-from app.domain.feature_store.models import FeaturePage, FeatureRow, FeatureRowWrite
+from app.domain.common.query import FilterSpec, PageSpec, QuerySpec, SortSpec
+from app.domain.feature_store.models import (
+    INT_TO_RATING,
+    FeaturePage,
+    FeatureRow,
+    FeatureRowWrite,
+)
 from app.domain.feature_store.ports import FeatureStoreRepository
 from app.domain.feature_store.quality import DQInputs
+from app.domain.scanning.models import ResultPage, ScanResultItemDomain
 from app.infra.db.models.feature_store import (
     FeatureRun,
     FeatureRunPointer,
@@ -20,6 +28,9 @@ from app.infra.db.models.feature_store import (
     StockFeatureDaily,
 )
 from app.infra.query.feature_store_query import apply_filters, apply_sort_and_paginate
+from app.models.stock_universe import StockUniverse
+
+logger = logging.getLogger(__name__)
 
 _BATCH_SIZE = 500
 
@@ -196,6 +207,45 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
             per_page=page.per_page,
         )
 
+    def query_run_as_scan_results(
+        self,
+        run_id: int,
+        spec: QuerySpec,
+        *,
+        include_sparklines: bool = True,
+    ) -> ResultPage:
+        """Query feature store and return results as ScanResultItemDomain.
+
+        Bridge method for dual-source queries — allows GetScanResultsUseCase
+        to read from the feature store while returning the same domain type
+        as the legacy scan_results path.
+        """
+        run = self._session.get(FeatureRun, run_id)
+        if run is None:
+            raise EntityNotFoundError("FeatureRun", run_id)
+
+        q = (
+            self._session.query(StockFeatureDaily, StockUniverse.name)
+            .outerjoin(
+                StockUniverse,
+                StockFeatureDaily.symbol == StockUniverse.symbol,
+            )
+            .filter(StockFeatureDaily.run_id == run_id)
+        )
+        q = apply_filters(q, spec.filters)
+        rows, total = apply_sort_and_paginate(q, spec.sort, spec.page)
+
+        items = tuple(
+            _map_feature_to_scan_result(row, company_name, include_sparklines)
+            for row, company_name in rows
+        )
+        return ResultPage(
+            items=items,
+            total=total,
+            page=spec.page.page,
+            per_page=spec.page.per_page,
+        )
+
     @staticmethod
     def _to_domain_row(row: StockFeatureDaily) -> FeatureRow:
         """Map ORM model to domain value object."""
@@ -208,3 +258,100 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
             passes_count=row.passes_count,
             details=row.details_json,
         )
+
+
+# ---------------------------------------------------------------------------
+# Bridge mapper: StockFeatureDaily → ScanResultItemDomain
+# ---------------------------------------------------------------------------
+
+
+def _map_feature_to_scan_result(
+    row: StockFeatureDaily,
+    company_name: str | None,
+    include_sparklines: bool,
+) -> ScanResultItemDomain:
+    """Map a feature store ORM row to a ScanResultItemDomain.
+
+    Analogous to ``_map_row_to_domain`` in scan_result_repo.py, but
+    extracts all fields from the details_json blob rather than from
+    dedicated SQL columns.
+    """
+    d: dict[str, Any] = row.details_json or {}
+
+    # Clamp score to 0-100 (matching legacy behavior)
+    raw_score = row.composite_score or 0
+    clamped_score = max(0.0, min(100.0, float(raw_score)))
+
+    # Reverse-map integer rating back to string
+    rating = INT_TO_RATING.get(row.overall_rating, d.get("rating", "Pass"))
+
+    extended: dict[str, Any] = {
+        "company_name": company_name,
+        "minervini_score": d.get("minervini_score"),
+        "canslim_score": d.get("canslim_score"),
+        "ipo_score": d.get("ipo_score"),
+        "custom_score": d.get("custom_score"),
+        "volume_breakthrough_score": d.get("volume_breakthrough_score"),
+        "rs_rating": d.get("rs_rating"),
+        "rs_rating_1m": d.get("rs_rating_1m"),
+        "rs_rating_3m": d.get("rs_rating_3m"),
+        "rs_rating_12m": d.get("rs_rating_12m"),
+        "stage": d.get("stage"),
+        "stage_name": d.get("stage_name"),
+        "volume": d.get("avg_dollar_volume"),
+        "market_cap": d.get("market_cap"),
+        "ma_alignment": d.get("ma_alignment"),
+        "vcp_detected": d.get("vcp_detected"),
+        "vcp_score": d.get("vcp_score"),
+        "vcp_pivot": d.get("vcp_pivot"),
+        "vcp_ready_for_breakout": d.get("vcp_ready_for_breakout"),
+        "vcp_contraction_ratio": d.get("vcp_contraction_ratio"),
+        "vcp_atr_score": d.get("vcp_atr_score"),
+        "passes_template": d.get("passes_template", False),
+        "adr_percent": d.get("adr_percent"),
+        "eps_growth_qq": d.get("eps_growth_qq"),
+        "sales_growth_qq": d.get("sales_growth_qq"),
+        "eps_growth_yy": d.get("eps_growth_yy"),
+        "sales_growth_yy": d.get("sales_growth_yy"),
+        "peg_ratio": d.get("peg_ratio"),
+        "eps_rating": d.get("eps_rating"),
+        "ibd_industry_group": d.get("ibd_industry_group"),
+        "ibd_group_rank": d.get("ibd_group_rank"),
+        "gics_sector": d.get("gics_sector"),
+        "gics_industry": d.get("gics_industry"),
+        "rs_sparkline_data": d.get("rs_sparkline_data") if include_sparklines else None,
+        "rs_trend": d.get("rs_trend"),
+        "price_sparkline_data": d.get("price_sparkline_data") if include_sparklines else None,
+        "price_change_1d": d.get("price_change_1d"),
+        "price_trend": d.get("price_trend"),
+        "ipo_date": d.get("ipo_date"),
+        "beta": d.get("beta"),
+        "beta_adj_rs": d.get("beta_adj_rs"),
+        "beta_adj_rs_1m": d.get("beta_adj_rs_1m"),
+        "beta_adj_rs_3m": d.get("beta_adj_rs_3m"),
+        "beta_adj_rs_12m": d.get("beta_adj_rs_12m"),
+        "perf_week": d.get("perf_week"),
+        "perf_month": d.get("perf_month"),
+        "perf_3m": d.get("perf_3m"),
+        "perf_6m": d.get("perf_6m"),
+        "gap_percent": d.get("gap_percent"),
+        "volume_surge": d.get("volume_surge"),
+        "ema_10_distance": d.get("ema_10_distance"),
+        "ema_20_distance": d.get("ema_20_distance"),
+        "ema_50_distance": d.get("ema_50_distance"),
+        "week_52_high_distance": d.get("from_52w_high_pct"),
+        "week_52_low_distance": d.get("above_52w_low_pct"),
+    }
+
+    return ScanResultItemDomain(
+        symbol=row.symbol,
+        composite_score=clamped_score,
+        rating=rating,
+        current_price=d.get("current_price"),
+        screener_outputs={},
+        screeners_run=d.get("screeners_run", []),
+        composite_method=d.get("composite_method", "weighted_average"),
+        screeners_passed=d.get("screeners_passed", 0),
+        screeners_total=d.get("screeners_total", 0),
+        extended_fields=extended,
+    )
