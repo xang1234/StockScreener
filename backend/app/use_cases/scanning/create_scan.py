@@ -89,6 +89,7 @@ class CreateScanUseCase:
                         status=existing.status,
                         total_stocks=existing.total_stocks or 0,
                         is_duplicate=True,
+                        feature_run_id=getattr(existing, "feature_run_id", None),
                     )
 
             # ── Resolve universe symbols ─────────────────────────────
