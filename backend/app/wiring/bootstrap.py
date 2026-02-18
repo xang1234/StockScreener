@@ -38,6 +38,9 @@ from app.use_cases.scanning.run_bulk_scan import RunBulkScanUseCase
 from app.use_cases.feature_store.build_daily_snapshot import (
     BuildDailyFeatureSnapshotUseCase,
 )
+from app.use_cases.feature_store.compare_runs import CompareFeatureRunsUseCase
+from app.use_cases.feature_store.list_runs import ListFeatureRunsUseCase
+from app.use_cases.scanning.explain_stock import ExplainStockUseCase
 
 
 # ── Unit of Work ─────────────────────────────────────────────────────────
@@ -103,6 +106,21 @@ def get_export_scan_results_use_case() -> ExportScanResultsUseCase:
 def get_run_bulk_scan_use_case() -> RunBulkScanUseCase:
     """Build a RunBulkScanUseCase wired with the scan orchestrator."""
     return RunBulkScanUseCase(scanner=get_scan_orchestrator())
+
+
+def get_explain_stock_use_case() -> ExplainStockUseCase:
+    """Build an ExplainStockUseCase (no extra dependencies — reads via UoW)."""
+    return ExplainStockUseCase()
+
+
+def get_list_feature_runs_use_case() -> ListFeatureRunsUseCase:
+    """Build a ListFeatureRunsUseCase (no extra dependencies — reads via UoW)."""
+    return ListFeatureRunsUseCase()
+
+
+def get_compare_feature_runs_use_case() -> CompareFeatureRunsUseCase:
+    """Build a CompareFeatureRunsUseCase (no extra dependencies — reads via UoW)."""
+    return CompareFeatureRunsUseCase()
 
 
 def get_build_daily_snapshot_use_case() -> BuildDailyFeatureSnapshotUseCase:

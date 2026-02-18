@@ -1,6 +1,6 @@
 """Main API router"""
 from fastapi import APIRouter
-from . import stocks, technical, scans, universe, cache, breadth, fundamentals, groups, themes, tasks, chatbot, chatbot_folders, market_scan, user_themes, user_watchlists, data_fetch_status, ticker_validation, filter_presets, prompt_presets, config
+from . import stocks, technical, scans, universe, cache, breadth, fundamentals, groups, themes, tasks, chatbot, chatbot_folders, market_scan, user_themes, user_watchlists, data_fetch_status, ticker_validation, filter_presets, prompt_presets, config, features
 
 # Create main router
 router = APIRouter()
@@ -26,3 +26,4 @@ router.include_router(ticker_validation.router, prefix="/ticker-validation", tag
 router.include_router(filter_presets.router, prefix="/filter-presets", tags=["filter-presets"])
 router.include_router(prompt_presets.router, prefix="/prompt-presets", tags=["prompt-presets"])
 router.include_router(config.router, tags=["config"])
+router.include_router(features.router, prefix="/features", tags=["features"])

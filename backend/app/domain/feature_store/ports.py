@@ -14,7 +14,15 @@ from datetime import date
 from app.domain.common.query import FilterSpec, PageSpec, SortSpec
 from app.domain.feature_store.quality import DQInputs, DQResult
 
-from .models import FeaturePage, FeatureRowWrite, FeatureRunDomain, RunStats, RunType
+from .models import (
+    FeaturePage,
+    FeatureRow,
+    FeatureRowWrite,
+    FeatureRunDomain,
+    RunStats,
+    RunStatus,
+    RunType,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +103,22 @@ class FeatureRunRepository(abc.ABC):
         """
         ...
 
+    @abc.abstractmethod
+    def list_runs_with_counts(
+        self,
+        *,
+        status: RunStatus | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        limit: int = 50,
+    ) -> Sequence[tuple[FeatureRunDomain, int, bool]]:
+        """Return (run, row_count, is_latest_published) tuples.
+
+        Ordered by created_at DESC.  Uses a COUNT subquery and pointer
+        JOIN — single SQL query, no N+1.
+        """
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Feature Store Repository
@@ -165,6 +189,24 @@ class FeatureStoreRepository(abc.ABC):
 
         Used by the standalone publish path when DQ inputs are not
         pre-computed from in-memory rows.
+        """
+        ...
+
+    @abc.abstractmethod
+    def get_row_by_symbol(self, run_id: int, symbol: str) -> FeatureRow | None:
+        """Get a single feature row by run_id and symbol (case-insensitive).
+
+        Does NOT validate run_id exists (caller handles EntityNotFoundError).
+        """
+        ...
+
+    @abc.abstractmethod
+    def get_scores_for_run(
+        self, run_id: int
+    ) -> dict[str, tuple[float | None, int | None]]:
+        """Return {symbol: (composite_score, overall_rating)} for all symbols in a run.
+
+        Raises EntityNotFoundError if run_id doesn't exist.
         """
         ...
 

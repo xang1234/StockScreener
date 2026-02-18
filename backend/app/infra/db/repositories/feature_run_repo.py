@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.domain.common.errors import EntityNotFoundError
@@ -16,6 +17,7 @@ from app.domain.feature_store.models import (
     validate_transition,
 )
 from app.domain.feature_store.ports import FeatureRunRepository
+from app.infra.db.models.feature_store import StockFeatureDaily
 from app.domain.feature_store.quality import DQResult
 from app.infra.db.models.feature_store import FeatureRun, FeatureRunPointer
 
@@ -133,6 +135,58 @@ class SqlFeatureRunRepository(FeatureRunRepository):
         row = self._get_or_raise(run_id)
         return self._to_domain(row)
 
+    def list_runs_with_counts(
+        self,
+        *,
+        status: RunStatus | None = None,
+        date_from: date | None = None,
+        date_to: date | None = None,
+        limit: int = 50,
+    ) -> Sequence[tuple[FeatureRunDomain, int, bool]]:
+        # Subquery: row count per run
+        row_count_sq = (
+            func.count(StockFeatureDaily.symbol)
+            .label("row_count")
+        )
+
+        # Subquery: latest_published pointer
+        pointer_sq = (
+            self._session.query(FeatureRunPointer.run_id)
+            .filter(FeatureRunPointer.key == "latest_published")
+            .scalar_subquery()
+        )
+
+        q = (
+            self._session.query(
+                FeatureRun,
+                func.coalesce(
+                    self._session.query(func.count(StockFeatureDaily.symbol))
+                    .filter(StockFeatureDaily.run_id == FeatureRun.id)
+                    .correlate(FeatureRun)
+                    .scalar_subquery(),
+                    0,
+                ).label("row_count"),
+                case(
+                    (FeatureRun.id == pointer_sq, True),
+                    else_=False,
+                ).label("is_latest"),
+            )
+        )
+
+        if status is not None:
+            q = q.filter(FeatureRun.status == status.value)
+        if date_from is not None:
+            q = q.filter(FeatureRun.as_of_date >= date_from)
+        if date_to is not None:
+            q = q.filter(FeatureRun.as_of_date <= date_to)
+
+        q = q.order_by(FeatureRun.created_at.desc()).limit(limit)
+
+        results: list[tuple[FeatureRunDomain, int, bool]] = []
+        for row, count, is_latest in q.all():
+            results.append((self._to_domain(row), count, bool(is_latest)))
+        return results
+
     # -- Private helpers ---------------------------------------------------
 
     def _get_or_raise(self, run_id: int) -> FeatureRun:
@@ -170,6 +224,7 @@ class SqlFeatureRunRepository(FeatureRunRepository):
             status=RunStatus(row.status),
             created_at=row.created_at,
             completed_at=row.completed_at,
+            published_at=row.published_at,
             correlation_id=row.correlation_id,
             code_version=row.code_version,
             universe_hash=row.universe_hash,

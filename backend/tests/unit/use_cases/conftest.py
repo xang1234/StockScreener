@@ -31,6 +31,7 @@ from app.domain.feature_store.models import (
     RunType,
     validate_transition,
 )
+from collections.abc import Sequence
 from app.domain.feature_store.ports import FeatureRunRepository, FeatureStoreRepository
 from app.domain.feature_store.quality import DQInputs, DQResult
 from app.domain.scanning.models import (
@@ -356,10 +357,12 @@ class FakeCancellationToken(CancellationToken):
 class FakeFeatureRunRepository(FeatureRunRepository):
     """In-memory feature run repository for use case tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, row_counter=None) -> None:
         self._runs: dict[int, FeatureRunDomain] = {}
         self._next_id = 1
         self._pointer_run_id: int | None = None
+        # Optional callback: (run_id) -> int for list_runs_with_counts
+        self._row_counter = row_counter
 
     def start_run(self, as_of_date, run_type, code_version=None,
                   universe_hash=None, input_hash=None,
@@ -371,6 +374,7 @@ class FakeFeatureRunRepository(FeatureRunRepository):
             status=RunStatus.RUNNING,
             created_at=datetime.now(),
             completed_at=None,
+            published_at=None,
             correlation_id=correlation_id,
             code_version=code_version,
             universe_hash=universe_hash,
@@ -386,7 +390,8 @@ class FakeFeatureRunRepository(FeatureRunRepository):
         updated = FeatureRunDomain(
             id=run.id, as_of_date=run.as_of_date, run_type=run.run_type,
             status=RunStatus.COMPLETED, created_at=run.created_at,
-            completed_at=datetime.now(), correlation_id=run.correlation_id,
+            completed_at=datetime.now(), published_at=None,
+            correlation_id=run.correlation_id,
             code_version=run.code_version, universe_hash=run.universe_hash,
             input_hash=run.input_hash, stats=stats, warnings=tuple(warnings),
         )
@@ -399,7 +404,8 @@ class FakeFeatureRunRepository(FeatureRunRepository):
         updated = FeatureRunDomain(
             id=run.id, as_of_date=run.as_of_date, run_type=run.run_type,
             status=RunStatus.QUARANTINED, created_at=run.created_at,
-            completed_at=run.completed_at, correlation_id=run.correlation_id,
+            completed_at=run.completed_at, published_at=None,
+            correlation_id=run.correlation_id,
             code_version=run.code_version, universe_hash=run.universe_hash,
             input_hash=run.input_hash, stats=run.stats,
             warnings=tuple(r.message for r in dq_results),
@@ -413,7 +419,8 @@ class FakeFeatureRunRepository(FeatureRunRepository):
         updated = FeatureRunDomain(
             id=run.id, as_of_date=run.as_of_date, run_type=run.run_type,
             status=RunStatus.PUBLISHED, created_at=run.created_at,
-            completed_at=run.completed_at, correlation_id=run.correlation_id,
+            completed_at=run.completed_at, published_at=datetime.now(),
+            correlation_id=run.correlation_id,
             code_version=run.code_version, universe_hash=run.universe_hash,
             input_hash=run.input_hash, stats=run.stats, warnings=run.warnings,
         )
@@ -428,6 +435,34 @@ class FakeFeatureRunRepository(FeatureRunRepository):
 
     def get_run(self, run_id) -> FeatureRunDomain:
         return self._get_or_raise(run_id)
+
+    def list_runs_with_counts(
+        self,
+        *,
+        status=None,
+        date_from=None,
+        date_to=None,
+        limit=50,
+    ) -> Sequence[tuple[FeatureRunDomain, int, bool]]:
+        runs = list(self._runs.values())
+
+        if status is not None:
+            runs = [r for r in runs if r.status == status]
+        if date_from is not None:
+            runs = [r for r in runs if r.as_of_date >= date_from]
+        if date_to is not None:
+            runs = [r for r in runs if r.as_of_date <= date_to]
+
+        # Sort by created_at DESC
+        runs.sort(key=lambda r: r.created_at, reverse=True)
+        runs = runs[:limit]
+
+        result = []
+        for run in runs:
+            count = self._row_counter(run.id) if self._row_counter else 0
+            is_latest = (self._pointer_run_id is not None and run.id == self._pointer_run_id)
+            result.append((run, count, is_latest))
+        return result
 
     def _get_or_raise(self, run_id: int) -> FeatureRunDomain:
         run = self._runs.get(run_id)
@@ -491,6 +526,22 @@ class FakeFeatureStoreRepository(FeatureStoreRepository):
             universe_symbols=tuple(universe),
             result_symbols=result_symbols,
         )
+
+    def get_row_by_symbol(self, run_id: int, symbol: str) -> FeatureRow | None:
+        for r in self._rows.get(run_id, []):
+            if r.symbol.upper() == symbol.upper():
+                return r
+        return None
+
+    def get_scores_for_run(
+        self, run_id: int
+    ) -> dict[str, tuple[float | None, int | None]]:
+        if run_id not in self._rows:
+            raise EntityNotFoundError("FeatureRun", run_id)
+        return {
+            r.symbol: (r.composite_score, r.overall_rating)
+            for r in self._rows[run_id]
+        }
 
     def query_run_as_scan_results(self, run_id, spec, *, include_sparklines=True):
         """Bridge method for dual-source tests."""

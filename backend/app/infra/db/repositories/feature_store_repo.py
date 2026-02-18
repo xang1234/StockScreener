@@ -449,6 +449,37 @@ class SqlFeatureStoreRepository(FeatureStoreRepository):
             for row, company_name in rows
         )
 
+    def get_row_by_symbol(self, run_id: int, symbol: str) -> FeatureRow | None:
+        row = (
+            self._session.query(StockFeatureDaily)
+            .filter(
+                StockFeatureDaily.run_id == run_id,
+                func.upper(StockFeatureDaily.symbol) == symbol.upper(),
+            )
+            .first()
+        )
+        if row is None:
+            return None
+        return self._to_domain_row(row)
+
+    def get_scores_for_run(
+        self, run_id: int
+    ) -> dict[str, tuple[float | None, int | None]]:
+        run = self._session.get(FeatureRun, run_id)
+        if run is None:
+            raise EntityNotFoundError("FeatureRun", run_id)
+
+        rows = (
+            self._session.query(
+                StockFeatureDaily.symbol,
+                StockFeatureDaily.composite_score,
+                StockFeatureDaily.overall_rating,
+            )
+            .filter(StockFeatureDaily.run_id == run_id)
+            .all()
+        )
+        return {r.symbol: (r.composite_score, r.overall_rating) for r in rows}
+
     @staticmethod
     def _to_domain_row(row: StockFeatureDaily) -> FeatureRow:
         """Map ORM model to domain value object."""

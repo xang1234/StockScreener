@@ -12,12 +12,19 @@ Business rules:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from app.domain.common.errors import EntityNotFoundError
 from app.domain.common.uow import UnitOfWork
+from app.domain.feature_store.models import (
+    INT_TO_RATING,
+    FeatureRow,
+    extract_screener_outputs,
+)
 from app.domain.scanning.models import (
     CriterionResult,
+    ScanResultItemDomain,
     ScreenerExplanation,
     StockExplanation,
 )
@@ -26,6 +33,8 @@ from app.domain.scanning.scoring import (
     STRONG_BUY_THRESHOLD,
     WATCH_THRESHOLD,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ── Query (input) ───────────────────────────────────────────────────────
@@ -98,6 +107,23 @@ class ExplainStockUseCase:
         "Pass": 0.0,
     }
 
+    @staticmethod
+    def _build_item_from_feature_row(row: FeatureRow) -> ScanResultItemDomain:
+        """Reconstruct ScanResultItemDomain from FeatureRow with screener_outputs."""
+        d = row.details or {}
+        screener_outputs = extract_screener_outputs(d)
+        return ScanResultItemDomain(
+            symbol=row.symbol,
+            composite_score=max(0.0, min(100.0, float(row.composite_score or 0))),
+            rating=INT_TO_RATING.get(row.overall_rating, d.get("rating", "Pass")),
+            current_price=d.get("current_price"),
+            screener_outputs=screener_outputs,
+            screeners_run=d.get("screeners_run", []),
+            composite_method=d.get("composite_method", "weighted_average"),
+            screeners_passed=d.get("screeners_passed", 0),
+            screeners_total=d.get("screeners_total", 0),
+        )
+
     def execute(
         self, uow: UnitOfWork, query: ExplainStockQuery
     ) -> ExplainStockResult:
@@ -106,10 +132,30 @@ class ExplainStockUseCase:
             if scan is None:
                 raise EntityNotFoundError("Scan", query.scan_id)
 
-            item = uow.scan_results.get_by_symbol(
-                scan_id=query.scan_id,
-                symbol=query.symbol,
-            )
+            item = None
+            if scan.feature_run_id:
+                # Feature store path with graceful fallback
+                row = uow.feature_store.get_row_by_symbol(
+                    scan.feature_run_id, query.symbol
+                )
+                if row is not None:
+                    item = self._build_item_from_feature_row(row)
+                else:
+                    logger.warning(
+                        "Symbol %s not in feature run %d, falling back to legacy",
+                        query.symbol,
+                        scan.feature_run_id,
+                    )
+                    item = uow.scan_results.get_by_symbol(
+                        scan_id=query.scan_id,
+                        symbol=query.symbol,
+                    )
+            else:
+                item = uow.scan_results.get_by_symbol(
+                    scan_id=query.scan_id,
+                    symbol=query.symbol,
+                )
+
             if item is None:
                 raise EntityNotFoundError("ScanResult", query.symbol)
 

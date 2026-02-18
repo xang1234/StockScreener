@@ -106,10 +106,11 @@ class FeatureRunDomain:
     status: RunStatus
     created_at: datetime
     completed_at: datetime | None  # None if still running or failed early
-    correlation_id: str | None
-    code_version: str | None
-    universe_hash: str | None
-    input_hash: str | None
+    published_at: datetime | None = None  # Set when status → PUBLISHED
+    correlation_id: str | None = None
+    code_version: str | None = None
+    universe_hash: str | None = None
+    input_hash: str | None = None
     stats: RunStats | None = None
     warnings: tuple[str, ...] = ()
 
@@ -192,6 +193,42 @@ INT_TO_RATING: dict[int, str] = {v: k for k, v in RATING_TO_INT.items()}
 
 
 # ---------------------------------------------------------------------------
+# Screener output extraction (details blob → domain objects)
+# ---------------------------------------------------------------------------
+
+
+def extract_screener_outputs(details: dict[str, Any]) -> dict[str, "ScreenerOutputDomain"]:
+    """Reconstruct screener outputs from a feature store details blob.
+
+    The details blob stores the full orchestrator result dict.
+    Screener breakdowns live at details["details"]["screeners"].
+    Returns empty dict if path is missing (defensive).
+    """
+    from app.domain.scanning.models import ScreenerOutputDomain
+
+    screeners_raw = details.get("details", {}).get("screeners", {})
+    if not isinstance(screeners_raw, dict):
+        return {}
+
+    outputs: dict[str, ScreenerOutputDomain] = {}
+    for name, data in screeners_raw.items():
+        if not isinstance(data, dict):
+            continue
+        try:
+            outputs[name] = ScreenerOutputDomain(
+                screener_name=name,
+                score=float(data.get("score", 0)),
+                passes=bool(data.get("passes", False)),
+                rating=data.get("rating", "Pass"),
+                breakdown=data.get("breakdown", {}),
+                details=data.get("details", {}),
+            )
+        except (ValueError, TypeError):
+            continue
+    return outputs
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -208,4 +245,5 @@ __all__ = [
     "FeaturePage",
     "RATING_TO_INT",
     "INT_TO_RATING",
+    "extract_screener_outputs",
 ]

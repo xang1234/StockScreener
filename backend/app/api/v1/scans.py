@@ -20,8 +20,9 @@ from ...models.scan_result import Scan, ScanResult
 from ...models.stock_universe import StockUniverse
 from pydantic import ValidationError
 from ...schemas.universe import UniverseDefinition
-from ...wiring.bootstrap import get_uow, get_create_scan_use_case, get_get_filter_options_use_case, get_get_single_result_use_case, get_get_peers_use_case, get_export_scan_results_use_case
+from ...wiring.bootstrap import get_uow, get_create_scan_use_case, get_get_filter_options_use_case, get_get_single_result_use_case, get_get_peers_use_case, get_export_scan_results_use_case, get_explain_stock_use_case
 from ...use_cases.scanning.create_scan import CreateScanCommand, CreateScanUseCase
+from ...use_cases.scanning.explain_stock import ExplainStockQuery, ExplainStockUseCase
 from ...use_cases.scanning.export_scan_results import ExportScanResultsQuery, ExportScanResultsUseCase
 from ...use_cases.scanning.get_filter_options import GetFilterOptionsQuery, GetFilterOptionsUseCase
 from ...use_cases.scanning.get_peers import GetPeersQuery, GetPeersUseCase
@@ -1320,3 +1321,87 @@ async def get_industry_peers(
         f"({result.peer_type.value}: '{result.group_name}')"
     )
     return [_domain_to_response(item) for item in result.peers]
+
+
+# ---------------------------------------------------------------------------
+# Explain endpoint
+# ---------------------------------------------------------------------------
+
+
+class CriterionResultResponse(BaseModel):
+    """One criterion's contribution within a screener."""
+    name: str
+    score: float
+    max_score: float
+    passed: bool
+
+
+class ScreenerExplanationResponse(BaseModel):
+    """Full explanation for one screener's evaluation."""
+    screener_name: str
+    score: float
+    passes: bool
+    rating: str
+    criteria: List[CriterionResultResponse]
+
+
+class ExplainResponse(BaseModel):
+    """Complete explanation of a stock's composite score."""
+    symbol: str
+    composite_score: float
+    rating: str
+    composite_method: str
+    screeners_passed: int
+    screeners_total: int
+    screener_explanations: List[ScreenerExplanationResponse]
+    rating_thresholds: dict
+
+
+def _explanation_to_response(explanation) -> ExplainResponse:
+    """Convert domain StockExplanation → Pydantic response."""
+    return ExplainResponse(
+        symbol=explanation.symbol,
+        composite_score=explanation.composite_score,
+        rating=explanation.rating,
+        composite_method=explanation.composite_method,
+        screeners_passed=explanation.screeners_passed,
+        screeners_total=explanation.screeners_total,
+        screener_explanations=[
+            ScreenerExplanationResponse(
+                screener_name=se.screener_name,
+                score=se.score,
+                passes=se.passes,
+                rating=se.rating,
+                criteria=[
+                    CriterionResultResponse(
+                        name=c.name,
+                        score=c.score,
+                        max_score=c.max_score,
+                        passed=c.passed,
+                    )
+                    for c in se.criteria
+                ],
+            )
+            for se in explanation.screener_explanations
+        ],
+        rating_thresholds=explanation.rating_thresholds,
+    )
+
+
+@router.get("/{scan_id}/explain/{symbol}", response_model=ExplainResponse)
+async def explain_stock(
+    scan_id: str,
+    symbol: str,
+    uow: SqlUnitOfWork = Depends(get_uow),
+    use_case: ExplainStockUseCase = Depends(get_explain_stock_use_case),
+):
+    """Explain why a stock received its composite score and rating."""
+    try:
+        query = ExplainStockQuery(scan_id=scan_id, symbol=symbol)
+        result = use_case.execute(uow, query)
+    except EntityNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error explaining stock: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error explaining stock: {str(e)}")
+    return _explanation_to_response(result.explanation)
