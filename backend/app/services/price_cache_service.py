@@ -1123,9 +1123,9 @@ class PriceCacheService:
                 minutes = None
 
             return {
+                **heartbeat,
                 "minutes": minutes,
                 "status": hb_status,
-                **heartbeat
             }
         except Exception as e:
             logger.error(f"Error getting heartbeat info: {e}")
