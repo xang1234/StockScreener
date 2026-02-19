@@ -151,23 +151,6 @@ This guide provides detailed instructions for capturing screenshots and GIFs for
 
 ---
 
-### 9. signals.png
-**Location**: `/signals` page
-**What to capture**: Signals page showing:
-- Left panel: Stock table with signal counts
-- Center: Price chart with signal markers overlaid
-- Right/bottom: Detector panels
-- Control panel with detector selection
-
-**Setup**:
-1. Navigate to Signals page
-2. Run signal detection or view existing signals
-3. Select a stock with detected signals
-4. Ensure chart shows signal markers
-5. Capture the full page layout
-
----
-
 ## GIFs to Capture
 
 ### 1. scan-workflow.gif (Hero GIF)
@@ -211,8 +194,7 @@ docs/
 │   ├── group-rankings.png    ← IBD group rankings page
 │   ├── group-detail.png      ← Group detail modal
 │   ├── chatbot.png           ← AI chatbot interface
-│   ├── themes.png            ← Theme discovery page
-│   └── signals.png           ← Signal detection page
+│   └── themes.png            ← Theme discovery page
 └── gifs/
     └── scan-workflow.gif     ← Hero GIF of scan process
 ```

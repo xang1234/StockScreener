@@ -1,164 +1,160 @@
-# Stock Scanner - CANSLIM + Minervini
+# Stock Scanner Frontend
 
-Comprehensive stock scanner using CANSLIM (William O'Neil) and Minervini methods to find high-quality stocks with relative strength, combined with industry group leadership analysis and Twitter sentiment.
+React 18 SPA for stock screening, market analysis, AI research, and portfolio tracking.
 
-## Overview
+> Full project overview and screenshots: [Root README](../README.md)
+> Backend docs: [Backend README](../backend/README.md)
 
-This scanner identifies stocks with strong fundamentals, technical setups, and momentum by implementing:
-
-- **CANSLIM Criteria**: Current earnings, Annual earnings, New highs, Supply/Demand, Leader/Laggard, Institutional sponsorship, Market direction
-- **Minervini Template**: Relative strength > 70, Stage 2 uptrend, Moving average alignment, VCP patterns
-- **Industry Group Analysis**: Track sector/industry leadership and trending groups
-- **Twitter Sentiment** (optional): Social media sentiment analysis when API credentials available
-
-## Technology Stack
-
-### Backend (Python)
-- FastAPI for REST API
-- SQLAlchemy + SQLite for data caching
-- yfinance for price/volume data
-- Alpha Vantage for fundamental data
-- Custom rate limiting and caching
-
-### Frontend (React)
-- React + Vite
-- Material-UI or shadcn/ui
-- Recharts for charting
-- TanStack Table for results
-- React Query for state management
-
-## Current Status
-
-**Phase 1: Foundation & Setup** ✅ **COMPLETED**
-- ✅ Backend FastAPI project structure
-- ✅ SQLite database with SQLAlchemy models
-- ✅ Database schema (12 tables)
-- ✅ yfinance service wrapper
-- ✅ Alpha Vantage service wrapper
-- ✅ Rate limiter utility
-- ✅ Caching service
-- ✅ Stock data API endpoints
-- 🔄 Frontend initialization (in progress)
-
-## Quick Start
-
-### Backend
+## Setup
 
 ```bash
-cd backend
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-# Edit .env and add Alpha Vantage API key (optional)
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+npm install        # Install dependencies
+npm run dev        # Development server on :5173
+npm run build      # Production build
+npm run lint       # ESLint
 ```
 
-Visit http://localhost:8000/docs for API documentation
+Requires backend API running on port 8000. See [Backend README](../backend/README.md) for setup.
 
-### Frontend (coming soon)
+## Tech Stack
 
-```bash
-cd frontend
-npm install
-npm run dev
+| Library | Purpose |
+|---------|---------|
+| React 18 | UI framework |
+| Vite | Build tool and dev server |
+| Material-UI (MUI) | Component library |
+| TanStack Query | Server state management and data fetching |
+| TanStack Table | Headless table with sorting, filtering, column visibility |
+| TanStack Virtual | Row virtualization for large datasets |
+| lightweight-charts | TradingView-style candlestick charts |
+| Recharts | Area charts, sparklines, breadth visualizations |
+| @hello-pangea/dnd | Drag-and-drop (watchlist ordering, folders) |
+| react-markdown | Markdown rendering in chatbot responses |
+| axios | HTTP client |
+| react-router-dom | Client-side routing |
+| date-fns | Date formatting and manipulation |
+
+## Pages
+
+| Route | Component | Loading | Description |
+|-------|-----------|---------|-------------|
+| `/` | `MarketScanPage` | Eager | Market dashboard with Key Markets, Themes, Watchlists, Stockbee tabs |
+| `/scan` | `ScanPage` | Eager | Multi-screener scanning with 80+ filters and CSV export |
+| `/breadth` | `BreadthPage` | Lazy | StockBee-style breadth indicators and trends |
+| `/groups` | `GroupRankingsPage` | Lazy | IBD industry group rankings with movers |
+| `/themes` | `ThemesPage` | Lazy | AI-powered theme discovery with trending/emerging detection |
+| `/chatbot` | `ChatbotPage` | Lazy | Multi-provider AI research assistant with web search |
+| `/stock/:symbol` | `StockDetails` | Eager | Individual stock analysis with charts and fundamentals |
+
+## Project Structure
+
+```
+src/
+├── main.jsx                     # App entry point
+├── App.jsx                      # Router, theme, providers
+├── index.css                    # Global styles
+├── api/                         # API client modules (one per backend group)
+│   ├── client.js                #   Axios instance with baseURL
+│   ├── scans.js                 #   Scan operations
+│   ├── stocks.js                #   Stock data
+│   ├── breadth.js               #   Market breadth
+│   ├── groups.js                #   Group rankings
+│   ├── themes.js                #   Theme discovery
+│   ├── chatbot.js               #   Chat sessions/messages
+│   ├── userWatchlists.js        #   Watchlist CRUD
+│   ├── userThemes.js            #   User themes
+│   ├── marketScan.js            #   Dashboard scan lists
+│   ├── filterPresets.js         #   Saved filter configs
+│   ├── promptPresets.js         #   Saved chatbot prompts
+│   ├── priceHistory.js          #   Price/chart data
+│   ├── tasks.js                 #   Background task polling
+│   └── cache.js                 #   Cache management
+├── pages/                       # Top-level page components
+│   ├── ScanPage.jsx             #   Bulk scanner
+│   ├── MarketScanPage.jsx       #   Market dashboard (home)
+│   ├── BreadthPage.jsx          #   Market breadth
+│   ├── GroupRankingsPage.jsx    #   Group rankings
+│   ├── ThemesPage.jsx           #   Theme discovery
+│   └── ChatbotPage.jsx          #   AI chatbot
+├── components/                  # Shared and feature components
+│   ├── Layout/                  #   App shell, navigation
+│   ├── Scan/                    #   Scanner UI (filters, results table)
+│   ├── MarketScan/              #   Dashboard cards, watchlist table
+│   ├── Stock/                   #   StockDetails view
+│   ├── Charts/                  #   Chart modal, candlestick charts
+│   ├── Chatbot/                 #   Chat interface, message list
+│   ├── Themes/                  #   Theme rankings, emerging panel
+│   ├── Technical/               #   Technical indicator displays
+│   ├── Settings/                #   App settings
+│   ├── common/                  #   Reusable UI primitives
+│   └── PipelineProgressCard.jsx #   Scan progress indicator
+├── contexts/                    # React contexts
+│   └── PipelineContext.jsx      #   Scan pipeline progress state
+├── hooks/                       # Custom hooks
+│   ├── useChartNavigation.js    #   Keyboard nav for chart modal
+│   ├── useFilterPresets.js      #   Filter preset CRUD
+│   ├── usePromptPresets.js      #   Prompt preset CRUD
+│   └── useToolSelection.js      #   Chatbot tool selection
+├── config/                      # Static configuration
+│   └── chatbotTools.js          #   Available chatbot tool definitions
+└── utils/                       # Pure utility functions
+    ├── colorUtils.js            #   Color calculations
+    ├── filterUtils.js           #   Filter logic helpers
+    └── formatUtils.js           #   Number/date formatting
 ```
 
-## API Endpoints
+## API Client Convention
 
-- `GET /` - API information
-- `GET /health` - Health check
-- `GET /api/v1/stocks/{symbol}/info` - Basic stock info
-- `GET /api/v1/stocks/{symbol}/fundamentals` - Fundamental data
-- `GET /api/v1/stocks/{symbol}/technicals` - Technical indicators
-- `GET /api/v1/stocks/{symbol}` - Complete stock data
-- `GET /api/v1/stocks/{symbol}/industry` - Industry classification
+The axios client in `api/client.js` sets `baseURL` to include the `/api` prefix:
+- **Local dev**: `baseURL = 'http://localhost:8000/api'`
+- **Docker**: `baseURL = '/api'` (set via `VITE_API_URL` build arg)
 
-## Stock Universe
+All API paths must start with `/v1/...`, never `/api/v1/...`:
 
-- **Full NYSE**: All NYSE-listed stocks (~2,500 stocks)
-- **Full NASDAQ**: All NASDAQ-listed stocks (~3,500 stocks)
-- **Total Universe**: ~6,000 stocks
-- **Industry Classification**: GICS sectors and industries (11 sectors, 69+ industries)
+```javascript
+// CORRECT — path without /api prefix
+const response = await apiClient.get('/v1/themes/rankings');
 
-## Implementation Phases
+// WRONG — double prefix in Docker: /api/api/v1/...
+const response = await apiClient.get('/api/v1/themes/rankings');
+```
 
-- [x] **Phase 1**: Foundation & Setup
-- [ ] **Phase 2**: Technical Analysis (Minervini Criteria)
-- [ ] **Phase 3**: Fundamental Analysis (CANSLIM Criteria)
-- [ ] **Phase 4**: Volume, Price Action & Market Analysis
-- [ ] **Phase 5**: Stock Universe & Bulk Scanning
-- [ ] **Phase 6**: Scoring System & Results
-- [ ] **Phase 7**: Industry Group Analysis
-- [ ] **Phase 8**: Watchlist & User Features
-- [ ] **Phase 9**: Optimization & Polish
-- [ ] **Phase 10**: Twitter Integration (Future)
+For modules with a `BASE_PATH` constant, same rule:
 
-## Database Schema
+```javascript
+const BASE_PATH = '/v1/user-themes';     // correct
+const BASE_PATH = '/api/v1/user-themes'; // wrong
+```
 
-**Core Tables:**
-- `stock_prices` - Historical OHLCV data
-- `stock_fundamentals` - EPS, revenue, institutional data
-- `stock_technicals` - MA values, RS rating, stage, VCP score
-- `scan_results` - Individual stock scores from scans
-- `scans` - Scan metadata and configuration
-- `watchlist` - User-tracked stocks
-- `market_status` - Daily market trend data
+## Patterns
 
-**Industry Analysis Tables:**
-- `industries` - Industry/sector master list (GICS)
-- `stock_industry` - Stock-to-industry mapping
-- `industry_performance` - Group RS ratings and leadership scores
-- `sector_rotation` - Historical sector rotation data
+### Data Fetching
 
-## Features (Planned)
+TanStack Query with 5-minute stale time and `placeholderData` for smooth transitions between loading states. Cache time is 30 minutes. Configured once in `App.jsx`.
 
-### CANSLIM Scoring
-- Current quarterly EPS growth > 25%
-- Annual EPS growth > 25% for 3 years
-- Price within 15% of 52-week high
-- Volume increasing on up days
-- Relative strength > 70
-- Institutional ownership 40-70%, increasing
-- Market in confirmed uptrend
+### Theming
 
-### Minervini Template
-- Relative Strength Rating > 80
-- Stage 2 uptrend (Weinstein Stage Analysis)
-- Price > 50-day > 150-day > 200-day MA
-- 200-day MA trending up for 1+ month
-- Price 30%+ above 52-week low, within 25% of high
-- Volatility Contraction Pattern (VCP) detection
+Dark mode by default. Dense 24px table rows. Compact 11-14px typography. Light mode supported via `ColorModeContext` toggle. Theme tokens defined in `App.jsx` → `getDesignTokens()`.
 
-### Industry Group Leadership
-- Group relative strength calculation
-- Leadership scoring (Stage 2 %, high-RS stocks)
-- Trending groups detection (RS > 70, improving)
-- Sector rotation analysis (4-quadrant model)
-- Industry filtering for scans
+### Code Splitting
 
-## Rate Limits & Caching
+`ScanPage`, `MarketScanPage`, and `StockDetails` are eagerly loaded (most frequently accessed). `BreadthPage`, `GroupRankingsPage`, `ThemesPage`, and `ChatbotPage` are lazy-loaded with `React.lazy()` and wrapped in `<Suspense>`.
 
-- **yfinance**: 1 req/sec (self-imposed)
-- **Alpha Vantage Free**: 25 req/day
-  - Fundamentals cached for 7 days
-  - Technicals cached for 24 hours
-  - Smart batching and prioritization
+### State Management
 
-## Documentation
+No global store. TanStack Query handles all server state. `useState` for local UI state. Two contexts:
+- `PipelineContext` — scan pipeline progress tracking
+- `ColorModeContext` — dark/light theme toggle
 
-- Backend API: See `backend/README.md`
-- Frontend: See `frontend/README.md` (coming soon)
-- Implementation Plan: See `.claude/plans/async-shimmying-rossum.md`
+### Adding a Page
 
-## Contributing
+1. Create component in `pages/`
+2. Add route in `App.jsx` (eager import or `React.lazy()`)
+3. Add navigation item in `components/Layout/`
+4. Create API module in `api/` if new endpoints are needed
 
-This is a personal project following CANSLIM and Minervini methodologies for stock screening.
+### Adding an API Endpoint
 
-## License
-
-MIT
-
-## Disclaimer
-
-This software is for educational and research purposes only. It is not financial advice. Always do your own research and consult with a licensed financial advisor before making investment decisions.
+1. Create or update module in `api/` (e.g., `api/myFeature.js`)
+2. Import and use `apiClient` from `api/client.js`
+3. Use `/v1/...` paths (never `/api/v1/...`)

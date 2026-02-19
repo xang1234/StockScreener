@@ -86,14 +86,15 @@ AI-powered identification of market themes and trends:
 - **Framework**: FastAPI
 - **ORM**: SQLAlchemy with SQLite
 - **Task Queue**: Celery with Redis broker
-- **Caching**: Redis (3 databases: broker, results, price cache)
+- **Caching**: Redis (3 databases: broker, results, application cache)
 
 ### Frontend
 - **Framework**: React 18 with Vite
 - **UI**: Material-UI (MUI)
 - **Data Fetching**: TanStack Query (React Query)
-- **Tables**: TanStack Table
-- **Charts**: Recharts
+- **Tables**: TanStack Table with TanStack Virtual
+- **Charts**: Recharts, lightweight-charts (TradingView-style candlestick charts)
+- **Drag & Drop**: @hello-pangea/dnd
 
 ### Data Sources
 - **yfinance** - Price/volume data (1 req/sec)
@@ -200,6 +201,11 @@ The backend runs as non-root user (uid 1000). If upgrading from an older version
 sudo chown -R 1000:1000 ./data
 ```
 
+## Documentation
+
+- [Backend README](backend/README.md) — Architecture details, API reference, database schema, and development guide
+- [Frontend README](frontend/README.md) — Component structure, patterns, conventions, and development guide
+
 ## Application Pages
 
 | Route | Page | Description |
@@ -209,32 +215,59 @@ sudo chown -R 1000:1000 ./data
 | `/breadth` | Market Breadth | StockBee-style breadth indicators and trends |
 | `/groups` | Group Rankings | IBD industry group rankings with movers |
 | `/themes` | Themes | AI-powered theme discovery with trending/emerging detection |
-| `/signals` | Signals | Technical anomaly detection (volume spikes, correlation breaks) |
 | `/chatbot` | Chatbot | Multi-provider AI research assistant with web search |
+| `/stock/:symbol` | Stock Detail | Individual stock analysis with charts and fundamentals |
 
 ## API Documentation
 
 Visit `http://localhost:8000/docs` for interactive Swagger documentation.
 
-### Key Endpoint Groups
-- `/api/v1/scans` - Stock screening operations
-- `/api/v1/stocks` - Stock data and fundamentals
-- `/api/v1/chatbot` - AI chat sessions and messages
-- `/api/v1/themes` - Theme discovery and analysis
-- `/api/v1/groups` - IBD group rankings
-- `/api/v1/breadth` - Market breadth indicators
-- `/api/v1/signals` - Technical signal detection
-- `/api/v1/technical` - Technical indicators
-- `/api/v1/universe` - Stock universe management
-- `/api/v1/user-watchlists` - Watchlist management
-- `/api/v1/filter-presets` - Saved filter configurations
+### Endpoint Groups
+
+**Core:**
+- `/api/v1/scans` — Scan management and results
+- `/api/v1/stocks` — Stock data, fundamentals, chart data
+- `/api/v1/features` — Feature store management
+
+**Market Analysis:**
+- `/api/v1/breadth` — Market breadth indicators
+- `/api/v1/groups` — IBD group rankings
+- `/api/v1/themes` — Theme discovery and analysis
+- `/api/v1/technical` — Technical indicators
+- `/api/v1/fundamentals` — Fundamental data
+
+**AI & Research:**
+- `/api/v1/chatbot` — AI chat sessions and messages
+- `/api/v1/chatbot/folders` — Chat folder management
+- `/api/v1/prompt-presets` — Saved chatbot prompts
+
+**User Data:**
+- `/api/v1/user-watchlists` — Watchlist management
+- `/api/v1/user-themes` — User theme management
+- `/api/v1/market-scan` — Dashboard market scan lists
+- `/api/v1/filter-presets` — Saved scan filter configurations
+
+**System:**
+- `/api/v1/universe` — Stock universe management
+- `/api/v1/cache` — Cache management
+- `/api/v1/tasks` — Background task status
+- `/api/v1/config` — Admin configuration
+- `/api/v1/data-fetch-status` — Data fetch monitoring
+- `/api/v1/ticker-validation` — Ticker symbol validation
+
+**Health Endpoints (root-level):**
+```
+GET /livez   — Liveness probe (zero dependencies)
+GET /readyz  — Readiness probe (checks DB + Redis)
+GET /health  — Deprecated alias for /readyz
+```
 
 ## Architecture
 
 ### Multi-Screener Orchestrator
 The scan orchestrator (`scanners/scan_orchestrator.py`) coordinates all screener types:
 - All screeners extend `BaseStockScreener` abstract class
-- Data fetched once and shared across screeners
+- The `DataPreparationLayer` fetches data once and distributes it to all active screeners
 - Composite scoring via configurable aggregation (weighted_average, maximum, minimum)
 
 ### Two-Queue Celery Architecture
@@ -243,8 +276,14 @@ The scan orchestrator (`scanners/scan_orchestrator.py`) coordinates all screener
 
 ### Redis Caching Strategy
 - DB 0: Celery broker
-- DB 1: Celery results
-- DB 2: Price cache (1hr TTL for prices, 7d for fundamentals, 30d for quarterly data)
+- DB 1: Celery results (24h TTL, auto-cleanup)
+- DB 2: Application cache — price data (7d TTL), fundamentals (7d TTL), benchmark/SPY (24h TTL with distributed locking)
+
+### Feature Store
+Pre-computed daily stock snapshots stored in `stock_feature_daily`. A scheduled feature run scores every stock in the universe, then atomically publishes via pointer swap. Scan API endpoints read from the latest published run. Lifecycle: RUNNING → COMPLETED → quality checks → PUBLISHED (or QUARANTINED).
+
+### Layered Architecture
+Clean separation: `domain/` (business rules, ports) → `use_cases/` (application services) → `infra/` (SQLAlchemy repos, Celery) → `api/` (FastAPI routes). DI wired in `wiring/bootstrap.py`. See [Backend README](backend/README.md) for details.
 
 ## Database
 
@@ -257,12 +296,15 @@ DATABASE_URL=sqlite:////Users/admin/StockScreenClaude/data/stockscanner.db
 The production database is located at `data/stockscanner.db` in the project root. Do not create databases in `backend/data/` or other subdirectories.
 
 ### Key Tables
-- `stock_prices`, `stock_fundamentals`, `stock_universe` - Core stock data
-- `scans`, `scan_results` - Scan metadata and results with multi-screener scores
-- `ibd_groups`, `ibd_group_ranks` - Industry group rankings
-- `theme_clusters`, `theme_constituents` - Theme discovery
-- `signals` - Technical signal detections
-- `chat_sessions`, `chat_messages` - Chatbot conversation history
+- `stock_prices`, `stock_fundamentals`, `stock_universe` — Core stock data
+- `scans`, `scan_results` — Scan metadata and results with multi-screener scores
+- `feature_runs`, `stock_feature_daily` — Feature Store (pre-computed scan snapshots)
+- `feature_run_pointers` — Atomic publish mechanism
+- `ibd_industry_groups`, `ibd_group_ranks` — Industry group rankings
+- `theme_clusters`, `theme_constituents` — Theme discovery
+- `chatbot_conversations`, `chatbot_messages` — Chatbot conversation history
+- `user_watchlists`, `watchlist_items` — Watchlist management
+- `user_themes`, `user_theme_stocks` — User theme tracking
 
 ## Environment Variables
 
@@ -302,6 +344,18 @@ INVALID_UNIVERSE_CLEANUP_ENABLED=false
 
 # Data Sources
 ALPHA_VANTAGE_API_KEY=your_key
+
+# LLM Routing (optional, sensible defaults)
+LLM_DEFAULT_PROVIDER=groq
+LLM_CHATBOT_MODEL=groq/qwen-qwen3-32b
+LLM_FALLBACK_ENABLED=true
+
+# Scanning
+DEFAULT_UNIVERSE=all
+SCAN_BATCH_SIZE=20
+
+# Celery
+CELERY_TIMEZONE=America/New_York
 ```
 
 ### Docker Deployment
