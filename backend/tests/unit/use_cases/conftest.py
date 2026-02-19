@@ -207,6 +207,22 @@ class FakeScanResultRepository(ScanResultRepository):
     def get_by_symbol(self, scan_id: str, symbol: str) -> ScanResultItemDomain | None:
         return next((i for i in self._items if i.symbol == symbol), None)
 
+    def get_details_by_symbol(self, scan_id: str, symbol: str) -> dict | None:
+        item = next((i for i in self._items if i.symbol == symbol), None)
+        if item is None:
+            return None
+        # Return a details dict that mirrors what the SQL repo stores.
+        # Tests that need screener breakdowns should populate _details_map.
+        return getattr(self, "_details_map", {}).get(symbol, {
+            "composite_score": item.composite_score,
+            "rating": item.rating,
+            "current_price": item.current_price,
+            "screeners_run": item.screeners_run,
+            "composite_method": item.composite_method,
+            "screeners_passed": item.screeners_passed,
+            "screeners_total": item.screeners_total,
+        })
+
     def get_peers_by_industry(
         self, scan_id: str, ibd_industry_group: str
     ) -> tuple[ScanResultItemDomain, ...]:

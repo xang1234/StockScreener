@@ -15,7 +15,9 @@ from app.use_cases.scanning.get_peers import (
 
 from tests.unit.use_cases.conftest import (
     FakeFeatureStoreRepository,
+    FakeScanResultRepository,
     FakeUnitOfWork,
+    make_domain_item,
 )
 
 
@@ -166,17 +168,34 @@ class TestScanNotFound:
         assert exc_info.value.identifier == "missing"
 
 
-class TestUnboundScanRejection:
-    """Scans without a feature run are rejected."""
+class TestUnboundScanFallback:
+    """Scans without a feature run fall back to scan_results."""
 
-    def test_unbound_scan_raises_not_found(self):
-        """Scan without feature_run_id raises EntityNotFoundError."""
-        uow = FakeUnitOfWork()
+    def test_unbound_scan_reads_target_from_scan_results(self):
+        """Scan without feature_run_id looks up the target from scan_results."""
+        items = [
+            make_domain_item("AAPL", ibd_industry_group="Consumer Electronics", gics_sector="Technology"),
+            make_domain_item("MSFT", score=70.0, ibd_industry_group="Software", gics_sector="Technology"),
+        ]
+        scan_results = FakeScanResultRepository(items=items)
+        uow = FakeUnitOfWork(scan_results=scan_results)
         uow.scans.create(scan_id="scan-legacy", status="completed")
         uc = GetPeersUseCase()
 
-        with pytest.raises(EntityNotFoundError, match="FeatureRun"):
-            uc.execute(uow, _make_query(scan_id="scan-legacy"))
+        result = uc.execute(uow, _make_query(scan_id="scan-legacy", symbol="AAPL"))
+
+        # Target was found; group extracted from extended_fields
+        assert result.group_name == "Consumer Electronics"
+
+    def test_unbound_scan_symbol_not_found_raises_error(self):
+        """Fallback path raises EntityNotFoundError for missing symbol."""
+        scan_results = FakeScanResultRepository(items=[make_domain_item("AAPL")])
+        uow = FakeUnitOfWork(scan_results=scan_results)
+        uow.scans.create(scan_id="scan-legacy", status="completed")
+        uc = GetPeersUseCase()
+
+        with pytest.raises(EntityNotFoundError, match="ScanResult.*ZZZZ"):
+            uc.execute(uow, _make_query(scan_id="scan-legacy", symbol="ZZZZ"))
 
 
 class TestFeatureStoreRouting:

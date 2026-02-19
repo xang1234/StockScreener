@@ -158,6 +158,17 @@ class ScanResultRepository(abc.ABC):
         """Return all results in the same GICS sector, ordered by composite_score DESC."""
         ...
 
+    @abc.abstractmethod
+    def get_details_by_symbol(
+        self, scan_id: str, symbol: str
+    ) -> dict | None:
+        """Return the raw details JSON blob for a single result, or None.
+
+        Used by the explain-stock fallback path to reconstruct screener
+        outputs from the legacy ``scan_results`` table.
+        """
+        ...
+
 
 class UniverseRepository(abc.ABC):
     """Resolve which symbols belong to a universe."""

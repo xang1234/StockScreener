@@ -248,6 +248,16 @@ if settings.cache_warmup_enabled:
             ),
         },
 
+        # Daily WAL checkpoint to flush WAL file and keep size bounded
+        # Runs at 1:30 AM ET daily (quiet period between price cleanup and orphan cleanup)
+        'daily-wal-checkpoint': {
+            'task': 'app.tasks.cache_tasks.wal_checkpoint',
+            'schedule': crontab(
+                hour=1,
+                minute=30,
+            ),
+        },
+
         # Monthly cleanup of old price data (keep 5 years)
         # Runs 1st of each month at 1 AM ET
         # Low priority - prevents unbounded database growth over time

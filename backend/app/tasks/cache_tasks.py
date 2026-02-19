@@ -14,7 +14,7 @@ from typing import List, Optional
 from datetime import datetime
 
 from ..celery_app import celery_app
-from ..database import SessionLocal
+from ..database import SessionLocal, is_corruption_error, safe_rollback
 from ..services.cache_manager import CacheManager
 from ..config import settings
 from ..utils.market_hours import is_market_open, is_trading_day, get_eastern_now, format_market_status
@@ -1333,8 +1333,11 @@ def cleanup_old_price_data(self, keep_years: int = 5):
         }
 
     except Exception as e:
-        logger.error(f"Error in cleanup_old_price_data task: {e}", exc_info=True)
-        db.rollback()
+        if is_corruption_error(e):
+            logger.critical("DATABASE CORRUPTION in cleanup_old_price_data: %s — run scripts/check_db_integrity.py --repair", e)
+        else:
+            logger.error("Error in cleanup_old_price_data task: %s", e, exc_info=True)
+        safe_rollback(db)
         return {
             'error': str(e),
             'timestamp': datetime.now().isoformat()
@@ -1542,8 +1545,11 @@ def cleanup_orphaned_scans(self):
         }
 
     except Exception as e:
-        logger.error(f"Error in cleanup_orphaned_scans task: {e}", exc_info=True)
-        db.rollback()
+        if is_corruption_error(e):
+            logger.critical("DATABASE CORRUPTION in cleanup_orphaned_scans: %s — run scripts/check_db_integrity.py --repair", e)
+        else:
+            logger.error("Error in cleanup_orphaned_scans task: %s", e, exc_info=True)
+        safe_rollback(db)
         return {
             'error': str(e),
             'timestamp': datetime.now().isoformat()
@@ -1551,3 +1557,50 @@ def cleanup_orphaned_scans(self):
 
     finally:
         db.close()
+
+
+@celery_app.task(name='app.tasks.cache_tasks.wal_checkpoint')
+def wal_checkpoint():
+    """
+    Flush WAL file to main database and truncate it.
+
+    WAL files grow indefinitely if long-running readers prevent
+    auto-checkpoint. This task runs daily during a quiet period
+    to keep WAL size bounded.
+
+    Returns:
+        Dict with checkpoint results (busy, log, checkpointed pages)
+    """
+    from sqlalchemy import text
+
+    logger.info("TASK: WAL Checkpoint (TRUNCATE)")
+
+    try:
+        from ..database import engine
+
+        with engine.connect() as conn:
+            result = conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+            row = result.fetchone()
+            busy, log_pages, checkpointed = row if row else (None, None, None)
+
+        if busy:
+            logger.warning("WAL checkpoint blocked by active reader (busy=%s)", busy)
+        else:
+            logger.info(
+                "WAL checkpoint complete: %s pages flushed, %s checkpointed",
+                log_pages, checkpointed,
+            )
+
+        return {
+            'busy': busy,
+            'log_pages': log_pages,
+            'checkpointed': checkpointed,
+            'completed_at': datetime.now().isoformat(),
+        }
+
+    except Exception as e:
+        logger.error("Error in wal_checkpoint task: %s", e, exc_info=True)
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().isoformat(),
+        }

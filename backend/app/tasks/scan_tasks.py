@@ -12,7 +12,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from ..celery_app import celery_app
-from ..database import SessionLocal
+from ..database import SessionLocal, is_corruption_error, safe_rollback
 from ..models.scan_result import Scan, ScanResult
 from ..config import settings
 from .data_fetch_lock import serialized_data_fetch
@@ -107,8 +107,11 @@ def cleanup_old_scans(db: Session, universe_key: str, keep_count: int = 3) -> No
             )
 
     except Exception as e:
-        logger.error(f"Error cleaning up old scans: {e}", exc_info=True)
-        db.rollback()
+        if is_corruption_error(e):
+            logger.critical("DATABASE CORRUPTION in cleanup_old_scans: %s — run scripts/check_db_integrity.py --repair", e)
+        else:
+            logger.error("Error cleaning up old scans: %s", e, exc_info=True)
+        safe_rollback(db)
 
 
 def compute_industry_peer_metrics(db: Session, scan_id: str):
@@ -170,8 +173,11 @@ def compute_industry_peer_metrics(db: Session, scan_id: str):
         logger.info(f"Computed peer metrics for {len(groups)} industry groups in scan {scan_id}")
 
     except Exception as e:
-        logger.error(f"Error computing peer metrics: {e}", exc_info=True)
-        db.rollback()
+        if is_corruption_error(e):
+            logger.critical("DATABASE CORRUPTION in compute_industry_peer_metrics: %s — run scripts/check_db_integrity.py --repair", e)
+        else:
+            logger.error("Error computing peer metrics: %s", e, exc_info=True)
+        safe_rollback(db)
 
 
 def _run_post_scan_pipeline(scan_id: str) -> None:

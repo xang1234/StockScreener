@@ -39,7 +39,8 @@ cd backend
 Layered Docker Compose architecture with three scenarios:
 
 ```bash
-# Local development (zero config)
+# Local development
+cp .env.docker.example .env   # Add API keys for chatbot
 docker-compose up
 
 # Homelab (behind reverse proxy like Traefik/nginx proxy manager)

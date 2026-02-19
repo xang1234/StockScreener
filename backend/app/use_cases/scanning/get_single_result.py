@@ -2,9 +2,9 @@
 
 Business rules:
   1. Verify the scan exists (raise EntityNotFoundError if not)
-  2. Verify the scan is bound to a feature run
-  3. Normalise the symbol to uppercase (case-insensitive lookup)
-  4. Query the feature store for the symbol
+  2. Normalise the symbol to uppercase (case-insensitive lookup)
+  3. If bound to a feature run → query the feature store
+  4. Otherwise → fall back to scan_results table
   5. Raise EntityNotFoundError if the symbol is not in the scan
 
 The use case depends ONLY on domain ports — never on SQLAlchemy,
@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from app.domain.common.errors import EntityNotFoundError
 from app.domain.common.uow import UnitOfWork
 from app.domain.scanning.models import ScanResultItemDomain
+
+from ._resolve import resolve_scan
 
 logger = logging.getLogger(__name__)
 
@@ -58,25 +60,29 @@ class GetSingleResultUseCase:
         self, uow: UnitOfWork, query: GetSingleResultQuery
     ) -> GetSingleResultResult:
         with uow:
-            scan = uow.scans.get_by_scan_id(query.scan_id)
-            if scan is None:
-                raise EntityNotFoundError("Scan", query.scan_id)
+            scan, run_id = resolve_scan(uow, query.scan_id)
 
-            if not scan.feature_run_id:
-                raise EntityNotFoundError(
-                    "FeatureRun", f"scan {query.scan_id} has no bound feature run"
+            if run_id:
+                logger.info(
+                    "Scan %s: querying feature_store for %s (run_id=%d)",
+                    query.scan_id,
+                    query.symbol,
+                    run_id,
                 )
-
-            logger.info(
-                "Scan %s: querying feature_store for %s (run_id=%d)",
-                query.scan_id,
-                query.symbol,
-                scan.feature_run_id,
-            )
-            item = uow.feature_store.get_by_symbol_for_run(
-                scan.feature_run_id,
-                query.symbol,
-            )
+                item = uow.feature_store.get_by_symbol_for_run(
+                    run_id,
+                    query.symbol,
+                )
+            else:
+                logger.info(
+                    "Scan %s: reading %s from scan_results (no feature run)",
+                    query.scan_id,
+                    query.symbol,
+                )
+                item = uow.scan_results.get_by_symbol(
+                    query.scan_id,
+                    query.symbol,
+                )
 
             if item is None:
                 raise EntityNotFoundError("ScanResult", query.symbol)

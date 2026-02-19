@@ -15,6 +15,7 @@ from app.use_cases.scanning.get_filter_options import (
 
 from tests.unit.use_cases.conftest import (
     FakeFeatureStoreRepository,
+    FakeScanResultRepository,
     FakeUnitOfWork,
 )
 
@@ -132,17 +133,20 @@ class TestScanNotFound:
         assert exc_info.value.identifier == "missing"
 
 
-class TestUnboundScanRejection:
-    """Scans without a feature run are rejected."""
+class TestUnboundScanFallback:
+    """Scans without a feature run fall back to scan_results."""
 
-    def test_unbound_scan_raises_not_found(self):
-        """Scan without feature_run_id raises EntityNotFoundError."""
-        uow = FakeUnitOfWork()
+    def test_unbound_scan_returns_filter_options(self):
+        """Scan without feature_run_id reads filter options from scan_results."""
+        scan_results = FakeScanResultRepository()
+        uow = FakeUnitOfWork(scan_results=scan_results)
         uow.scans.create(scan_id="scan-legacy", status="completed")
         uc = GetFilterOptionsUseCase()
 
-        with pytest.raises(EntityNotFoundError, match="FeatureRun"):
-            uc.execute(uow, _make_query(scan_id="scan-legacy"))
+        result = uc.execute(uow, _make_query(scan_id="scan-legacy"))
+
+        assert isinstance(result, GetFilterOptionsResult)
+        assert isinstance(result.options, FilterOptions)
 
 
 class TestFeatureStoreRouting:

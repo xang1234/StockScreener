@@ -29,7 +29,17 @@ class TestReadyz:
     async def test_healthy_when_db_and_redis_up(self, client):
         mock_redis = MagicMock()
         mock_redis.ping.return_value = True
-        with patch("app.main.get_redis_client", return_value=mock_redis):
+        # Mock engine.connect() to return a quick_check "ok" result
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = "ok"
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value = mock_result
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_engine = MagicMock()
+        mock_engine.connect.return_value = mock_conn
+        with patch("app.main.get_redis_client", return_value=mock_redis), \
+             patch("app.main.engine", mock_engine):
             response = await client.get("/readyz")
             assert response.status_code == 200
             data = response.json()
@@ -63,6 +73,22 @@ class TestReadyz:
             data = response.json()
             assert data["status"] == "degraded"
             assert "error" in data["checks"]["database"]
+
+    async def test_503_when_db_corruption_detected(self, client):
+        mock_result = MagicMock()
+        mock_result.scalar.return_value = "*** in table scan_results: row 1234 missing"
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value = mock_result
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_engine = MagicMock()
+        mock_engine.connect.return_value = mock_conn
+        with patch("app.main.engine", mock_engine):
+            response = await client.get("/readyz")
+            assert response.status_code == 503
+            data = response.json()
+            assert data["status"] == "degraded"
+            assert "corruption detected" in data["checks"]["database"]
 
 
 @pytest.mark.asyncio

@@ -5,10 +5,10 @@ Reports stored values rather than re-deriving scores.
 
 Business rules:
   1. Verify the scan exists (raise EntityNotFoundError if not)
-  2. Verify the scan is bound to a feature run
-  3. Normalise the symbol to uppercase (case-insensitive lookup)
-  4. Retrieve the feature row and build a ScanResultItemDomain with screener_outputs
-  5. Build a StockExplanation from the item's screener_outputs
+  2. Normalise the symbol to uppercase (case-insensitive lookup)
+  3. If bound to a feature run → retrieve FeatureRow from feature store
+  4. Otherwise → retrieve details blob from scan_results
+  5. Build a StockExplanation from the screener_outputs
 """
 
 from __future__ import annotations
@@ -34,6 +34,8 @@ from app.domain.scanning.scoring import (
     STRONG_BUY_THRESHOLD,
     WATCH_THRESHOLD,
 )
+
+from ._resolve import resolve_scan
 
 logger = logging.getLogger(__name__)
 
@@ -125,26 +127,50 @@ class ExplainStockUseCase:
             screeners_total=d.get("screeners_total", 0),
         )
 
+    @staticmethod
+    def _build_item_from_details(
+        symbol: str, details: dict,
+    ) -> ScanResultItemDomain:
+        """Reconstruct ScanResultItemDomain from a raw details blob (legacy path)."""
+        screener_outputs = extract_screener_outputs(details)
+        raw_score = details.get("composite_score", 0) or 0
+        return ScanResultItemDomain(
+            symbol=symbol,
+            composite_score=max(0.0, min(100.0, float(raw_score))),
+            rating=details.get("rating", "Pass"),
+            current_price=details.get("current_price"),
+            screener_outputs=screener_outputs,
+            screeners_run=details.get("screeners_run", []),
+            composite_method=details.get("composite_method", "weighted_average"),
+            screeners_passed=details.get("screeners_passed", 0),
+            screeners_total=details.get("screeners_total", 0),
+        )
+
     def execute(
         self, uow: UnitOfWork, query: ExplainStockQuery
     ) -> ExplainStockResult:
         with uow:
-            scan = uow.scans.get_by_scan_id(query.scan_id)
-            if scan is None:
-                raise EntityNotFoundError("Scan", query.scan_id)
+            scan, run_id = resolve_scan(uow, query.scan_id)
 
-            if not scan.feature_run_id:
-                raise EntityNotFoundError(
-                    "FeatureRun", f"scan {query.scan_id} has no bound feature run"
+            if run_id:
+                row = uow.feature_store.get_row_by_symbol(
+                    run_id, query.symbol
                 )
-
-            row = uow.feature_store.get_row_by_symbol(
-                scan.feature_run_id, query.symbol
-            )
-            if row is None:
-                raise EntityNotFoundError("ScanResult", query.symbol)
-
-            item = self._build_item_from_feature_row(row)
+                if row is None:
+                    raise EntityNotFoundError("ScanResult", query.symbol)
+                item = self._build_item_from_feature_row(row)
+            else:
+                logger.info(
+                    "Scan %s: reading details for %s from scan_results (no feature run)",
+                    query.scan_id,
+                    query.symbol,
+                )
+                details = uow.scan_results.get_details_by_symbol(
+                    query.scan_id, query.symbol
+                )
+                if details is None:
+                    raise EntityNotFoundError("ScanResult", query.symbol)
+                item = self._build_item_from_details(query.symbol, details)
 
         # Build per-screener explanations
         screener_explanations: list[ScreenerExplanation] = []

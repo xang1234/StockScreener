@@ -15,10 +15,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from app.domain.common.errors import EntityNotFoundError
 from app.domain.common.uow import UnitOfWork
 from app.domain.scanning.filter_spec import FilterSpec, SortSpec
 from app.domain.scanning.models import ExportFormat, ScanResultItemDomain
+
+from ._resolve import resolve_scan
 
 logger = logging.getLogger(__name__)
 
@@ -179,14 +180,7 @@ class ExportScanResultsUseCase:
         self, uow: UnitOfWork, query: ExportScanResultsQuery
     ) -> ExportScanResultsResult:
         with uow:
-            scan = uow.scans.get_by_scan_id(query.scan_id)
-            if scan is None:
-                raise EntityNotFoundError("Scan", query.scan_id)
-
-            if not scan.feature_run_id:
-                raise EntityNotFoundError(
-                    "FeatureRun", f"scan {query.scan_id} has no bound feature run"
-                )
+            scan, run_id = resolve_scan(uow, query.scan_id)
 
             # Build effective filters — copy to avoid mutating the frozen query
             filters = copy.copy(query.filters)
@@ -195,16 +189,27 @@ class ExportScanResultsUseCase:
                     "rating", ("Strong Buy", "Buy")
                 )
 
-            logger.info(
-                "Scan %s: exporting from feature_store (run_id=%d)",
-                query.scan_id,
-                scan.feature_run_id,
-            )
-            items = uow.feature_store.query_all_as_scan_results(
-                scan.feature_run_id,
-                filters,
-                query.sort,
-            )
+            if run_id:
+                logger.info(
+                    "Scan %s: exporting from feature_store (run_id=%d)",
+                    query.scan_id,
+                    run_id,
+                )
+                items = uow.feature_store.query_all_as_scan_results(
+                    run_id,
+                    filters,
+                    query.sort,
+                )
+            else:
+                logger.info(
+                    "Scan %s: exporting from scan_results (no feature run)",
+                    query.scan_id,
+                )
+                items = uow.scan_results.query_all(
+                    query.scan_id,
+                    filters,
+                    query.sort,
+                )
 
         # Format output
         if query.export_format == ExportFormat.CSV:

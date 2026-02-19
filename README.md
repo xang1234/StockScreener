@@ -155,9 +155,16 @@ The project uses a layered Docker Compose architecture supporting three deployme
 
 #### Local Development (Zero Config)
 ```bash
+# 1. Set up environment (required for chatbot/LLM features)
+cp .env.docker.example .env
+# Edit .env: Add your API keys (GROQ_API_KEY, GEMINI_API_KEY, etc.)
+
+# 2. Start all services
 docker-compose up
 ```
 Starts Redis, Backend API, Celery workers, and Frontend. Access at http://localhost
+
+> **Note:** Docker Compose reads environment variables from `.env` in the project root (not `.env.docker`). Without this file, LLM API keys will be empty and the chatbot won't work. Scanning and other features work without API keys.
 
 #### Homelab (Behind Reverse Proxy)
 For deployment behind Traefik, nginx proxy manager, or similar:
@@ -359,7 +366,10 @@ CELERY_TIMEZONE=America/New_York
 ```
 
 ### Docker Deployment
-For Docker, use `.env.docker` in the project root (see `.env.docker.example`):
+Create a `.env` file in the project root from the template (Docker Compose requires this exact filename):
+```bash
+cp .env.docker.example .env
+```
 
 ```env
 # Deployment

@@ -14,7 +14,9 @@ from app.use_cases.scanning.get_single_result import (
 
 from tests.unit.use_cases.conftest import (
     FakeFeatureStoreRepository,
+    FakeScanResultRepository,
     FakeUnitOfWork,
+    make_domain_item,
 )
 
 
@@ -118,17 +120,30 @@ class TestScanNotFound:
         assert exc_info.value.identifier == "missing"
 
 
-class TestUnboundScanRejection:
-    """Scans without a feature run are rejected."""
+class TestUnboundScanFallback:
+    """Scans without a feature run fall back to scan_results."""
 
-    def test_unbound_scan_raises_not_found(self):
-        """Scan without feature_run_id raises EntityNotFoundError."""
-        uow = FakeUnitOfWork()
+    def test_unbound_scan_returns_result_from_scan_results(self):
+        """Scan without feature_run_id reads from scan_results table."""
+        items = [make_domain_item("AAPL"), make_domain_item("MSFT", score=70.0)]
+        scan_results = FakeScanResultRepository(items=items)
+        uow = FakeUnitOfWork(scan_results=scan_results)
         uow.scans.create(scan_id="scan-legacy", status="completed")
         uc = GetSingleResultUseCase()
 
-        with pytest.raises(EntityNotFoundError, match="FeatureRun"):
-            uc.execute(uow, _make_query(scan_id="scan-legacy"))
+        result = uc.execute(uow, _make_query(scan_id="scan-legacy", symbol="AAPL"))
+
+        assert result.item.symbol == "AAPL"
+
+    def test_unbound_scan_symbol_not_found_raises_error(self):
+        """Fallback path still raises EntityNotFoundError for missing symbol."""
+        scan_results = FakeScanResultRepository(items=[make_domain_item("AAPL")])
+        uow = FakeUnitOfWork(scan_results=scan_results)
+        uow.scans.create(scan_id="scan-legacy", status="completed")
+        uc = GetSingleResultUseCase()
+
+        with pytest.raises(EntityNotFoundError, match="ScanResult.*ZZZZ"):
+            uc.execute(uow, _make_query(scan_id="scan-legacy", symbol="ZZZZ"))
 
 
 class TestFeatureStoreRouting:

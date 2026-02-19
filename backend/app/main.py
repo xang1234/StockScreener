@@ -104,6 +104,15 @@ async def lifespan(app: FastAPI):
     init_db()
     print("Database initialized")
 
+    # Verify WAL mode is active (critical for concurrent writers in Docker)
+    if "sqlite" in settings.database_url:
+        with engine.connect() as conn:
+            journal_mode = conn.execute(text("PRAGMA journal_mode")).scalar()
+            print(f"SQLite journal mode: {journal_mode}")
+            if journal_mode != "wal":
+                print(f"WARNING: Expected WAL journal mode but got '{journal_mode}'. "
+                      "Concurrent writes may cause corruption.")
+
     # Run schema migrations (idempotent — safe on every startup)
     run_universe_migration()
     run_feature_store_migration()
@@ -161,11 +170,16 @@ async def readiness():
     checks = {}
     healthy = True
 
-    # DB: verify connectivity with a lightweight query
+    # DB: verify connectivity and structural integrity via quick_check
+    # quick_check verifies B-tree structure without full row scan (~1-3s on 2.7GB DB)
     try:
         with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        checks["database"] = "ok"
+            result = conn.execute(text("PRAGMA quick_check")).scalar()
+            if result == "ok":
+                checks["database"] = "ok"
+            else:
+                checks["database"] = f"corruption detected: {result}"
+                healthy = False
     except Exception as e:
         checks["database"] = f"error: {type(e).__name__}"
         healthy = False

@@ -15,7 +15,9 @@ from app.use_cases.scanning.export_scan_results import (
 
 from tests.unit.use_cases.conftest import (
     FakeFeatureStoreRepository,
+    FakeScanResultRepository,
     FakeUnitOfWork,
+    make_domain_item,
 )
 
 
@@ -130,17 +132,25 @@ class TestScanNotFound:
         assert exc_info.value.identifier == "missing"
 
 
-class TestUnboundScanRejection:
-    """Scans without a feature run are rejected."""
+class TestUnboundScanFallback:
+    """Scans without a feature run fall back to scan_results."""
 
-    def test_unbound_scan_raises_not_found(self):
-        """Scan without feature_run_id raises EntityNotFoundError."""
-        uow = FakeUnitOfWork()
+    def test_unbound_scan_exports_from_scan_results(self):
+        """Scan without feature_run_id exports from scan_results table."""
+        items = [make_domain_item("AAPL"), make_domain_item("MSFT", score=70.0)]
+        scan_results = FakeScanResultRepository(items=items)
+        uow = FakeUnitOfWork(scan_results=scan_results)
         uow.scans.create(scan_id="scan-legacy", status="completed")
         uc = ExportScanResultsUseCase()
 
-        with pytest.raises(EntityNotFoundError, match="FeatureRun"):
-            uc.execute(uow, _make_query(scan_id="scan-legacy"))
+        result = uc.execute(uow, _make_query(scan_id="scan-legacy"))
+
+        csv_text = result.content.decode("utf-8-sig")
+        lines = csv_text.strip().split("\n")
+        # Header + 2 data rows from scan_results
+        assert len(lines) == 3
+        assert "AAPL" in csv_text
+        assert "MSFT" in csv_text
 
 
 class TestFeatureStoreRouting:

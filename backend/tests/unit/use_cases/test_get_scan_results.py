@@ -21,7 +21,9 @@ from app.use_cases.scanning.get_scan_results import (
 
 from tests.unit.use_cases.conftest import (
     FakeFeatureStoreRepository,
+    FakeScanResultRepository,
     FakeUnitOfWork,
+    make_domain_item,
 )
 
 
@@ -183,17 +185,35 @@ class TestDefaultQuerySpec:
         assert result.page.total == 2
 
 
-class TestUnboundScanRejection:
-    """Scans without a feature run are rejected."""
+class TestUnboundScanFallback:
+    """Scans without a feature run fall back to scan_results."""
 
-    def test_unbound_scan_raises_not_found(self):
-        """Scan without feature_run_id raises EntityNotFoundError."""
-        uow = FakeUnitOfWork()
+    def test_unbound_scan_returns_results_from_scan_results(self):
+        """Scan without feature_run_id reads from scan_results table."""
+        items = [make_domain_item("AAPL"), make_domain_item("MSFT", score=70.0)]
+        scan_results = FakeScanResultRepository(items=items)
+        uow = FakeUnitOfWork(scan_results=scan_results)
         uow.scans.create(scan_id="scan-legacy", status="completed")
         uc = GetScanResultsUseCase()
 
-        with pytest.raises(EntityNotFoundError, match="FeatureRun"):
-            uc.execute(uow, _make_query(scan_id="scan-legacy"))
+        result = uc.execute(uow, _make_query(scan_id="scan-legacy"))
+
+        assert isinstance(result.page, ResultPage)
+        assert result.page.total == 2
+        assert {i.symbol for i in result.page.items} == {"AAPL", "MSFT"}
+
+    def test_unbound_scan_passes_query_args_to_scan_results(self):
+        """Verify scan_id and spec are forwarded to scan_results.query()."""
+        items = [make_domain_item("AAPL")]
+        scan_results = FakeScanResultRepository(items=items)
+        uow = FakeUnitOfWork(scan_results=scan_results)
+        uow.scans.create(scan_id="scan-legacy", status="completed")
+        uc = GetScanResultsUseCase()
+
+        uc.execute(uow, _make_query(scan_id="scan-legacy"))
+
+        assert scan_results.last_query_args is not None
+        assert scan_results.last_query_args["scan_id"] == "scan-legacy"
 
 
 class TestFeatureStoreRouting:

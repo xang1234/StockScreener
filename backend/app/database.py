@@ -10,16 +10,20 @@ from .config import settings
 engine = create_engine(
     settings.database_url,
     connect_args={"check_same_thread": False} if "sqlite" in settings.database_url else {},
-    echo=False  # Set to True for SQL query logging
+    echo=False,  # Set to True for SQL query logging
+    pool_pre_ping=True,  # Verify connections are alive before use (catches stale conns in Celery workers)
 )
 
 
-# Enable SQLite foreign key enforcement (OFF by default in SQLite)
+# Enable SQLite pragmas for WAL mode, concurrency, and foreign keys
 if "sqlite" in settings.database_url:
 
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=15000")
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
@@ -59,3 +63,19 @@ def init_db():
 
     # Create all tables
     Base.metadata.create_all(bind=engine)
+
+
+def is_corruption_error(exc: Exception) -> bool:
+    """Detect SQLite database corruption from exception messages."""
+    msg = str(exc).lower()
+    return any(s in msg for s in (
+        "malformed", "disk image", "file is not a database", "disk i/o error",
+    ))
+
+
+def safe_rollback(db):
+    """Rollback that won't raise on a corrupted DB."""
+    try:
+        db.rollback()
+    except Exception:
+        pass
