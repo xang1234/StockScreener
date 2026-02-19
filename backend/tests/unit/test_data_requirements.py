@@ -81,9 +81,9 @@ class TestScreenerRequirements:
         assert req.needs_earnings_history is False  # Uses eps_growth_yy from quarterly_growth
 
     def test_minervini_skips_fundamentals(self):
-        from app.scanners.minervini_scanner_v2 import MinerviniScannerV2
+        from app.scanners.minervini_scanner import MinerviniScanner
 
-        req = MinerviniScannerV2().get_data_requirements()
+        req = MinerviniScanner().get_data_requirements()
         assert req.needs_fundamentals is False
         assert req.needs_benchmark is True
         assert req.needs_quarterly_growth is False  # Informational only, not used in scoring

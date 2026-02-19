@@ -12,3 +12,9 @@ class TaskResponse(BaseModel):
     task_id: str
     message: str
     status: str
+
+
+class PriceChangeBounds(BaseModel):
+    """Min/max bounds for a price change period"""
+    min: float
+    max: float

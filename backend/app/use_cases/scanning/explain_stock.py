@@ -5,9 +5,10 @@ Reports stored values rather than re-deriving scores.
 
 Business rules:
   1. Verify the scan exists (raise EntityNotFoundError if not)
-  2. Normalise the symbol to uppercase (case-insensitive lookup)
-  3. Retrieve the scan result item via ScanResultRepository.get_by_symbol()
-  4. Build a StockExplanation from the item's screener_outputs
+  2. Verify the scan is bound to a feature run
+  3. Normalise the symbol to uppercase (case-insensitive lookup)
+  4. Retrieve the feature row and build a ScanResultItemDomain with screener_outputs
+  5. Build a StockExplanation from the item's screener_outputs
 """
 
 from __future__ import annotations
@@ -132,32 +133,18 @@ class ExplainStockUseCase:
             if scan is None:
                 raise EntityNotFoundError("Scan", query.scan_id)
 
-            item = None
-            if scan.feature_run_id:
-                # Feature store path with graceful fallback
-                row = uow.feature_store.get_row_by_symbol(
-                    scan.feature_run_id, query.symbol
-                )
-                if row is not None:
-                    item = self._build_item_from_feature_row(row)
-                else:
-                    logger.warning(
-                        "Symbol %s not in feature run %d, falling back to legacy",
-                        query.symbol,
-                        scan.feature_run_id,
-                    )
-                    item = uow.scan_results.get_by_symbol(
-                        scan_id=query.scan_id,
-                        symbol=query.symbol,
-                    )
-            else:
-                item = uow.scan_results.get_by_symbol(
-                    scan_id=query.scan_id,
-                    symbol=query.symbol,
+            if not scan.feature_run_id:
+                raise EntityNotFoundError(
+                    "FeatureRun", f"scan {query.scan_id} has no bound feature run"
                 )
 
-            if item is None:
+            row = uow.feature_store.get_row_by_symbol(
+                scan.feature_run_id, query.symbol
+            )
+            if row is None:
                 raise EntityNotFoundError("ScanResult", query.symbol)
+
+            item = self._build_item_from_feature_row(row)
 
         # Build per-screener explanations
         screener_explanations: list[ScreenerExplanation] = []

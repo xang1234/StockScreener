@@ -3,6 +3,8 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict
 from datetime import datetime
 
+from .common import PriceChangeBounds
+
 
 # ================= Theme Schemas =================
 
@@ -140,12 +142,6 @@ class SubgroupWithStocksResponse(BaseModel):
     position: int
     is_collapsed: bool
     stocks: List[StockDataResponse]
-
-
-class PriceChangeBounds(BaseModel):
-    """Min/max bounds for a price change period"""
-    min: float
-    max: float
 
 
 class ThemeDataResponse(BaseModel):

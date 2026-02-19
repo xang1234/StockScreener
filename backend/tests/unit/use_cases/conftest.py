@@ -703,7 +703,12 @@ class FakeUnitOfWork(UnitOfWork):
 
 
 def _make_scan_result_from_feature_row(row: FeatureRow) -> ScanResultItemDomain:
-    """Convert a FeatureRow to a ScanResultItemDomain for fake bridge method."""
+    """Convert a FeatureRow to a ScanResultItemDomain for fake bridge method.
+
+    Propagates all metric/classification fields from details to
+    extended_fields, matching the real SqlFeatureStoreRepository bridge
+    method behaviour.
+    """
     from app.domain.feature_store.models import INT_TO_RATING
 
     d = row.details or {}
@@ -711,10 +716,15 @@ def _make_scan_result_from_feature_row(row: FeatureRow) -> ScanResultItemDomain:
     clamped = max(0.0, min(100.0, float(raw_score)))
     rating = INT_TO_RATING.get(row.overall_rating, d.get("rating", "Pass"))
     extended: dict[str, Any] = {"company_name": f"{row.symbol} Inc"}
-    # Propagate classification fields so GetPeers can read them
-    for key in ("ibd_industry_group", "gics_sector"):
-        if key in d:
-            extended[key] = d[key]
+    # Propagate all metric/classification fields (skip keys consumed elsewhere)
+    _SKIP_KEYS = {
+        "screeners_run", "composite_method", "screeners_passed",
+        "screeners_total", "current_price", "rating", "composite_score",
+        "details",
+    }
+    for key, val in d.items():
+        if key not in _SKIP_KEYS:
+            extended[key] = val
     return ScanResultItemDomain(
         symbol=row.symbol,
         composite_score=clamped,

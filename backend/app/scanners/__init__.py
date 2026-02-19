@@ -12,7 +12,7 @@ from .data_preparation import DataPreparationLayer
 from .scan_orchestrator import ScanOrchestrator
 
 # Import screeners (this triggers registration via @register_screener decorator)
-from .minervini_scanner_v2 import MinerviniScannerV2
+from .minervini_scanner import MinerviniScanner
 from .canslim_scanner import CANSLIMScanner
 from .ipo_scanner import IPOScanner
 from .custom_scanner import CustomScanner
@@ -33,7 +33,7 @@ __all__ = [
     'DataPreparationLayer',
     'ScanOrchestrator',
     # Screeners
-    'MinerviniScannerV2',
+    'MinerviniScanner',
     'CANSLIMScanner',
     'IPOScanner',
     'CustomScanner',

@@ -13,6 +13,7 @@ from typing import List
 from ...database import get_db
 from ...models.industry import IBDGroupRank
 from celery.result import AsyncResult
+from ...schemas.common import TaskResponse
 from ...schemas.groups import (
     GroupRankResponse,
     GroupRankingsResponse,
@@ -20,7 +21,6 @@ from ...schemas.groups import (
     MoversResponse,
     CalculationRequest,
     CalculationResponse,
-    CalculationTaskResponse,
     CalculationStatusResponse,
     BackfillRequest,
     BackfillResponse,
@@ -123,7 +123,7 @@ async def get_group_detail(
     return GroupDetailResponse(**detail)
 
 
-@router.post("/rankings/calculate", response_model=CalculationTaskResponse)
+@router.post("/rankings/calculate", response_model=TaskResponse)
 async def trigger_calculation(request: CalculationRequest):
     """
     Manually trigger a group ranking calculation.
@@ -148,7 +148,7 @@ async def trigger_calculation(request: CalculationRequest):
         task = calculate_daily_group_rankings.delay(date_str)
         logger.info(f"Group ranking calculation task dispatched: {task.id}")
 
-        return CalculationTaskResponse(
+        return TaskResponse(
             task_id=task.id,
             status="queued",
             message=f"Calculation task queued for {date_str or 'today'}"

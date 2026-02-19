@@ -3,6 +3,8 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict
 from datetime import datetime
 
+from .common import PriceChangeBounds
+
 
 # ================= Watchlist Schemas =================
 
@@ -98,12 +100,6 @@ class WatchlistStockData(BaseModel):
     change_3m: Optional[float] = None
     change_6m: Optional[float] = None
     change_12m: Optional[float] = None
-
-
-class PriceChangeBounds(BaseModel):
-    """Min/max bounds for a price change period"""
-    min: float
-    max: float
 
 
 class WatchlistDataResponse(BaseModel):

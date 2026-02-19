@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Test script for MinerviniScannerV2 and multi-screener architecture.
+Test script for MinerviniScanner and multi-screener architecture.
 
 Tests:
 1. Screener registry
 2. Data preparation layer
-3. MinerviniScannerV2 implementation
+3. MinerviniScanner implementation
 4. Scan orchestrator
 """
 import sys
@@ -30,7 +30,7 @@ TEST_SYMBOLS = ['AAPL', 'MSFT', 'NVDA']
 
 
 def test_screener_registry():
-    """Test that MinerviniScannerV2 is registered."""
+    """Test that MinerviniScanner is registered."""
     logger.info("\n" + "="*80)
     logger.info("TEST 1: Screener Registry")
     logger.info("="*80)
@@ -79,7 +79,7 @@ def test_data_requirements():
 
 
 def test_scan_orchestrator():
-    """Test the scan orchestrator with MinerviniScannerV2."""
+    """Test the scan orchestrator with MinerviniScanner."""
     logger.info("="*80)
     logger.info("TEST 3: Scan Orchestrator")
     logger.info("="*80)

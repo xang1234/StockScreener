@@ -2,11 +2,10 @@
 
 Business rules:
   1. Verify the scan exists (raise EntityNotFoundError if not)
-  2. Normalise the symbol to uppercase (case-insensitive lookup)
-  3. Route to the correct data source:
-     - Bound scans (feature_run_id set) -> query feature store
-     - Unbound scans (legacy) -> query scan_results table
-  4. Raise EntityNotFoundError if the symbol is not in the scan
+  2. Verify the scan is bound to a feature run
+  3. Normalise the symbol to uppercase (case-insensitive lookup)
+  4. Query the feature store for the symbol
+  5. Raise EntityNotFoundError if the symbol is not in the scan
 
 The use case depends ONLY on domain ports — never on SQLAlchemy,
 FastAPI, or any other infrastructure.
@@ -63,36 +62,21 @@ class GetSingleResultUseCase:
             if scan is None:
                 raise EntityNotFoundError("Scan", query.scan_id)
 
-            if scan.feature_run_id:
-                logger.info(
-                    "Scan %s: routing single result to feature_store (run_id=%d)",
-                    query.scan_id,
-                    scan.feature_run_id,
+            if not scan.feature_run_id:
+                raise EntityNotFoundError(
+                    "FeatureRun", f"scan {query.scan_id} has no bound feature run"
                 )
-                try:
-                    item = uow.feature_store.get_by_symbol_for_run(
-                        scan.feature_run_id,
-                        query.symbol,
-                    )
-                except EntityNotFoundError:
-                    logger.warning(
-                        "Feature run %d not found for scan %s, falling back to legacy",
-                        scan.feature_run_id,
-                        query.scan_id,
-                    )
-                    item = uow.scan_results.get_by_symbol(
-                        scan_id=query.scan_id,
-                        symbol=query.symbol,
-                    )
-            else:
-                logger.debug(
-                    "Scan %s: routing single result to legacy scan_results",
-                    query.scan_id,
-                )
-                item = uow.scan_results.get_by_symbol(
-                    scan_id=query.scan_id,
-                    symbol=query.symbol,
-                )
+
+            logger.info(
+                "Scan %s: querying feature_store for %s (run_id=%d)",
+                query.scan_id,
+                query.symbol,
+                scan.feature_run_id,
+            )
+            item = uow.feature_store.get_by_symbol_for_run(
+                scan.feature_run_id,
+                query.symbol,
+            )
 
             if item is None:
                 raise EntityNotFoundError("ScanResult", query.symbol)

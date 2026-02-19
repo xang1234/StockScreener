@@ -11,8 +11,9 @@ import abc
 from collections.abc import Sequence
 from datetime import date
 
-from app.domain.common.query import FilterSpec, PageSpec, SortSpec
+from app.domain.common.query import FilterSpec, PageSpec, QuerySpec, SortSpec
 from app.domain.feature_store.quality import DQInputs, DQResult
+from app.domain.scanning.models import FilterOptions, ResultPage, ScanResultItemDomain
 
 from .models import (
     FeaturePage,
@@ -207,6 +208,91 @@ class FeatureStoreRepository(abc.ABC):
         """Return {symbol: (composite_score, overall_rating)} for all symbols in a run.
 
         Raises EntityNotFoundError if run_id doesn't exist.
+        """
+        ...
+
+    # -- Bridge methods (scanning-domain reads via feature store) -----------
+
+    @abc.abstractmethod
+    def query_run_as_scan_results(
+        self,
+        run_id: int,
+        spec: QuerySpec,
+        include_sparklines: bool = True,
+    ) -> ResultPage:
+        """Paginated query of a feature run mapped to scanning-domain models.
+
+        Raises:
+            EntityNotFoundError: If *run_id* does not exist.
+        """
+        ...
+
+    @abc.abstractmethod
+    def get_by_symbol_for_run(
+        self,
+        run_id: int,
+        symbol: str,
+        include_sparklines: bool = True,
+    ) -> ScanResultItemDomain | None:
+        """Single symbol lookup from a feature run.
+
+        Returns None if the symbol is not in the run.
+
+        Raises:
+            EntityNotFoundError: If *run_id* does not exist.
+        """
+        ...
+
+    @abc.abstractmethod
+    def get_peers_by_industry_for_run(
+        self,
+        run_id: int,
+        ibd_industry_group: str,
+    ) -> tuple[ScanResultItemDomain, ...]:
+        """Return peers sharing the same IBD industry group.
+
+        Raises:
+            EntityNotFoundError: If *run_id* does not exist.
+        """
+        ...
+
+    @abc.abstractmethod
+    def get_peers_by_sector_for_run(
+        self,
+        run_id: int,
+        gics_sector: str,
+    ) -> tuple[ScanResultItemDomain, ...]:
+        """Return peers sharing the same GICS sector.
+
+        Raises:
+            EntityNotFoundError: If *run_id* does not exist.
+        """
+        ...
+
+    @abc.abstractmethod
+    def get_filter_options_for_run(
+        self,
+        run_id: int,
+    ) -> FilterOptions:
+        """Return distinct filter option values for a feature run.
+
+        Raises:
+            EntityNotFoundError: If *run_id* does not exist.
+        """
+        ...
+
+    @abc.abstractmethod
+    def query_all_as_scan_results(
+        self,
+        run_id: int,
+        filters: FilterSpec | None = None,
+        sort: SortSpec | None = None,
+        include_sparklines: bool = False,
+    ) -> tuple[ScanResultItemDomain, ...]:
+        """Return all rows from a feature run (no pagination; for export).
+
+        Raises:
+            EntityNotFoundError: If *run_id* does not exist.
         """
         ...
 

@@ -2,10 +2,9 @@
 
 This use case owns the business rules for retrieving filter dropdown options:
   1. Verify the scan exists (raise EntityNotFoundError if not)
-  2. Route to the correct data source:
-     - Bound scans (feature_run_id set) -> query feature store
-     - Unbound scans (legacy) -> query scan_results table
-  3. Return FilterOptions
+  2. Verify the scan is bound to a feature run
+  3. Query the feature store for filter options
+  4. Return FilterOptions
 
 The use case depends ONLY on domain ports — never on SQLAlchemy,
 FastAPI, or any other infrastructure.
@@ -57,32 +56,18 @@ class GetFilterOptionsUseCase:
             if scan is None:
                 raise EntityNotFoundError("Scan", query.scan_id)
 
-            if scan.feature_run_id:
-                logger.info(
-                    "Scan %s: routing filter options to feature_store (run_id=%d)",
-                    query.scan_id,
-                    scan.feature_run_id,
+            if not scan.feature_run_id:
+                raise EntityNotFoundError(
+                    "FeatureRun", f"scan {query.scan_id} has no bound feature run"
                 )
-                try:
-                    options = uow.feature_store.get_filter_options_for_run(
-                        scan.feature_run_id,
-                    )
-                except EntityNotFoundError:
-                    logger.warning(
-                        "Feature run %d not found for scan %s, falling back to legacy",
-                        scan.feature_run_id,
-                        query.scan_id,
-                    )
-                    options = uow.scan_results.get_filter_options(
-                        scan_id=query.scan_id,
-                    )
-            else:
-                logger.debug(
-                    "Scan %s: routing filter options to legacy scan_results",
-                    query.scan_id,
-                )
-                options = uow.scan_results.get_filter_options(
-                    scan_id=query.scan_id,
-                )
+
+            logger.info(
+                "Scan %s: querying filter options from feature_store (run_id=%d)",
+                query.scan_id,
+                scan.feature_run_id,
+            )
+            options = uow.feature_store.get_filter_options_for_run(
+                scan.feature_run_id,
+            )
 
         return GetFilterOptionsResult(options=options)

@@ -183,6 +183,11 @@ class ExportScanResultsUseCase:
             if scan is None:
                 raise EntityNotFoundError("Scan", query.scan_id)
 
+            if not scan.feature_run_id:
+                raise EntityNotFoundError(
+                    "FeatureRun", f"scan {query.scan_id} has no bound feature run"
+                )
+
             # Build effective filters — copy to avoid mutating the frozen query
             filters = copy.copy(query.filters)
             if query.passes_only:
@@ -190,39 +195,16 @@ class ExportScanResultsUseCase:
                     "rating", ("Strong Buy", "Buy")
                 )
 
-            if scan.feature_run_id:
-                logger.info(
-                    "Scan %s: routing export to feature_store (run_id=%d)",
-                    query.scan_id,
-                    scan.feature_run_id,
-                )
-                try:
-                    items = uow.feature_store.query_all_as_scan_results(
-                        scan.feature_run_id,
-                        filters,
-                        query.sort,
-                    )
-                except EntityNotFoundError:
-                    logger.warning(
-                        "Feature run %d not found for scan %s, falling back to legacy",
-                        scan.feature_run_id,
-                        query.scan_id,
-                    )
-                    items = uow.scan_results.query_all(
-                        scan_id=query.scan_id,
-                        filters=filters,
-                        sort=query.sort,
-                    )
-            else:
-                logger.debug(
-                    "Scan %s: routing export to legacy scan_results",
-                    query.scan_id,
-                )
-                items = uow.scan_results.query_all(
-                    scan_id=query.scan_id,
-                    filters=filters,
-                    sort=query.sort,
-                )
+            logger.info(
+                "Scan %s: exporting from feature_store (run_id=%d)",
+                query.scan_id,
+                scan.feature_run_id,
+            )
+            items = uow.feature_store.query_all_as_scan_results(
+                scan.feature_run_id,
+                filters,
+                query.sort,
+            )
 
         # Format output
         if query.export_format == ExportFormat.CSV:

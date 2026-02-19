@@ -119,14 +119,6 @@ class CalculationResponse(BaseModel):
     date: Optional[str] = Field(None, description="Date calculated")
 
 
-class CalculationTaskResponse(BaseModel):
-    """Response model for async calculation task dispatch"""
-
-    task_id: str = Field(..., description="Celery task ID for status polling")
-    status: str = Field(..., description="Initial status (queued)")
-    message: str = Field(..., description="Human-readable message")
-
-
 class CalculationStatusResponse(BaseModel):
     """Response model for calculation task status polling"""
 

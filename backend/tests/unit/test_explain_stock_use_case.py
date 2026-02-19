@@ -3,14 +3,13 @@
 Pure in-memory tests — no infrastructure.
 """
 
+from datetime import date
+
 import pytest
 
 from app.domain.common.errors import EntityNotFoundError
-from app.domain.scanning.models import (
-    ScreenerOutputDomain,
-    ScanResultItemDomain,
-    StockExplanation,
-)
+from app.domain.feature_store.models import FeatureRow
+from app.domain.scanning.models import StockExplanation
 from app.domain.scanning.scoring import (
     BUY_THRESHOLD,
     STRONG_BUY_THRESHOLD,
@@ -22,27 +21,81 @@ from app.use_cases.scanning.explain_stock import (
     ExplainStockUseCase,
 )
 
-from tests.unit.scanning_fakes import (
-    FakeScanResultRepository,
+from tests.unit.use_cases.conftest import (
+    FakeFeatureStoreRepository,
     FakeUnitOfWork,
-    setup_scan,
 )
 
 
-# ── Specialised fake ────────────────────────────────────────────────────
+# ── Constants ────────────────────────────────────────────────────────────
 
-
-class ExplainableResultRepo(FakeScanResultRepository):
-    """Fake that supports get_by_symbol() with a dict of items."""
-
-    def __init__(self, items_by_symbol: dict[str, ScanResultItemDomain] | None = None):
-        self._items = items_by_symbol or {}
-
-    def get_by_symbol(self, scan_id: str, symbol: str) -> ScanResultItemDomain | None:
-        return self._items.get(symbol)
+AS_OF = date(2026, 2, 17)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
+
+
+def _make_minervini_screener_data(score=75.0):
+    """Build a Minervini screener data dict for FeatureRow details."""
+    return {
+        "score": score,
+        "passes": score >= 60,
+        "rating": "Buy",
+        "breakdown": {
+            "rs_rating": {"points": 18.0, "max_points": 20, "value": 88, "passes": True},
+            "stage": {"points": 20.0, "max_points": 20, "value": 2, "passes": True},
+            "ma_alignment": {"points": 12.0, "max_points": 15, "value": 80, "passes": True},
+            "position_52w": {"points": 10.0, "max_points": 15, "passes": False},
+            "vcp": {"points": 0.0, "max_points": 20, "value": 0, "passes": False},
+        },
+        "details": {"rs_value": 88},
+    }
+
+
+def _make_canslim_screener_data(score=80.0):
+    """Build a CANSLIM screener data dict for FeatureRow details."""
+    return {
+        "score": score,
+        "passes": True,
+        "rating": "Strong Buy",
+        "breakdown": {
+            "current_earnings": 20.0,
+            "annual_earnings": 15.0,
+            "new_highs": 10.0,
+            "supply_demand": 12.0,
+            "leader": 18.0,
+            "institutional": 5.0,
+        },
+        "details": {},
+    }
+
+
+def _make_feature_row(
+    symbol="AAPL",
+    composite_score=85.0,
+    screeners=None,
+):
+    """Build a FeatureRow with screener data embedded in details."""
+    screeners = screeners or {}
+    details = {
+        "screeners_run": list(screeners.keys()),
+        "composite_method": "weighted_average",
+        "screeners_passed": sum(1 for s in screeners.values() if s.get("passes", False)),
+        "screeners_total": len(screeners),
+        "current_price": 150.0,
+        "details": {"screeners": screeners},
+    }
+    # 5 = Strong Buy, 4 = Buy
+    overall_rating = 5 if composite_score >= 80 else 4
+    return FeatureRow(
+        run_id=1,
+        symbol=symbol,
+        as_of_date=AS_OF,
+        composite_score=composite_score,
+        overall_rating=overall_rating,
+        passes_count=sum(1 for s in screeners.values() if s.get("passes", False)),
+        details=details,
+    )
 
 
 def _make_query(**overrides) -> ExplainStockQuery:
@@ -51,61 +104,13 @@ def _make_query(**overrides) -> ExplainStockQuery:
     return ExplainStockQuery(**defaults)
 
 
-def _make_item_with_outputs(
-    symbol: str = "AAPL",
-    composite_score: float = 85.0,
-    screener_outputs: dict[str, ScreenerOutputDomain] | None = None,
-) -> ScanResultItemDomain:
-    """Build a ScanResultItemDomain with explicit screener_outputs."""
-    outputs = screener_outputs or {}
-    return ScanResultItemDomain(
-        symbol=symbol,
-        composite_score=composite_score,
-        rating="Strong Buy" if composite_score >= 80 else "Buy",
-        current_price=150.0,
-        screener_outputs=outputs,
-        screeners_run=list(outputs.keys()),
-        composite_method="weighted_average",
-        screeners_passed=sum(1 for o in outputs.values() if o.passes),
-        screeners_total=len(outputs),
-        extended_fields={"company_name": f"{symbol} Inc"},
-    )
-
-
-def _make_minervini_output(score: float = 75.0) -> ScreenerOutputDomain:
-    """Build a Minervini output with the real nested breakdown format."""
-    return ScreenerOutputDomain(
-        screener_name="minervini",
-        score=score,
-        passes=score >= 60,
-        rating="Buy",
-        breakdown={
-            "rs_rating": {"points": 18.0, "max_points": 20, "value": 88, "passes": True},
-            "stage": {"points": 20.0, "max_points": 20, "value": 2, "passes": True},
-            "ma_alignment": {"points": 12.0, "max_points": 15, "value": 80, "passes": True},
-            "position_52w": {"points": 10.0, "max_points": 15, "passes": False},
-            "vcp": {"points": 0.0, "max_points": 20, "value": 0, "passes": False},
-        },
-        details={"rs_value": 88},
-    )
-
-
-def _make_canslim_output(score: float = 80.0) -> ScreenerOutputDomain:
-    return ScreenerOutputDomain(
-        screener_name="canslim",
-        score=score,
-        passes=True,
-        rating="Strong Buy",
-        breakdown={
-            "current_earnings": 20.0,
-            "annual_earnings": 15.0,
-            "new_highs": 10.0,
-            "supply_demand": 12.0,
-            "leader": 18.0,
-            "institutional": 5.0,
-        },
-        details={},
-    )
+def _setup_bound_scan(uow, feature_store, scan_id="scan-123", run_id=1, rows=None):
+    """Create a scan bound to a feature run, with rows in the feature store."""
+    uow.scans.create(scan_id=scan_id, status="completed", feature_run_id=run_id)
+    if rows:
+        feature_store.upsert_snapshot_rows(run_id, rows)
+    else:
+        feature_store.upsert_snapshot_rows(run_id, [])
 
 
 # ── Tests: Happy Path ──────────────────────────────────────────────────
@@ -115,12 +120,11 @@ class TestHappyPath:
     """Core business logic for explaining a stock's score."""
 
     def test_returns_explanation_with_correct_structure(self):
-        item = _make_item_with_outputs(
-            "AAPL", 85.0, {"minervini": _make_minervini_output()}
-        )
-        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("AAPL", 85.0, {"minervini": _make_minervini_screener_data()}),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -135,12 +139,11 @@ class TestHappyPath:
         assert result.explanation.screeners_total == 1
 
     def test_criteria_count_matches_breakdown(self):
-        item = _make_item_with_outputs(
-            "AAPL", 85.0, {"minervini": _make_minervini_output()}
-        )
-        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("AAPL", 85.0, {"minervini": _make_minervini_screener_data()}),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -150,12 +153,11 @@ class TestHappyPath:
 
     def test_max_scores_from_nested_breakdown(self):
         """Minervini nested dicts contain max_points directly."""
-        item = _make_item_with_outputs(
-            "AAPL", 85.0, {"minervini": _make_minervini_output()}
-        )
-        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("AAPL", 85.0, {"minervini": _make_minervini_screener_data()}),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -171,12 +173,11 @@ class TestHappyPath:
 
     def test_max_scores_from_flat_breakdown_use_lookup(self):
         """CANSLIM uses flat breakdowns, so max_score comes from _MAX_SCORES lookup."""
-        item = _make_item_with_outputs(
-            "AAPL", 80.0, {"canslim": _make_canslim_output()}
-        )
-        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("AAPL", 80.0, {"canslim": _make_canslim_screener_data()}),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -191,12 +192,11 @@ class TestHappyPath:
 
     def test_passed_flag_from_nested_breakdown(self):
         """Minervini uses nested dicts with explicit 'passes' booleans."""
-        item = _make_item_with_outputs(
-            "AAPL", 85.0, {"minervini": _make_minervini_output()}
-        )
-        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("AAPL", 85.0, {"minervini": _make_minervini_screener_data()}),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -211,12 +211,11 @@ class TestHappyPath:
         assert criteria_by_name["position_52w"].passed is False
 
     def test_rating_thresholds_included(self):
-        item = _make_item_with_outputs(
-            "AAPL", 85.0, {"minervini": _make_minervini_output()}
-        )
-        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("AAPL", 85.0, {"minervini": _make_minervini_screener_data()}),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -252,6 +251,23 @@ class TestScanNotFound:
         assert exc_info.value.identifier == "missing"
 
 
+# ── Tests: Unbound Scan ───────────────────────────────────────────────
+
+
+class TestUnboundScanRaises:
+    """Scan exists but has no feature_run_id — raises EntityNotFoundError."""
+
+    def test_unbound_scan_raises_feature_run_not_found(self):
+        uow = FakeUnitOfWork()
+        uow.scans.create(scan_id="scan-123", status="completed")  # no feature_run_id
+        uc = ExplainStockUseCase()
+
+        with pytest.raises(EntityNotFoundError) as exc_info:
+            uc.execute(uow, _make_query())
+
+        assert exc_info.value.entity == "FeatureRun"
+
+
 # ── Tests: Result Not Found ────────────────────────────────────────────
 
 
@@ -259,18 +275,18 @@ class TestResultNotFound:
     """Use case raises EntityNotFoundError when symbol is not in the scan."""
 
     def test_missing_symbol_raises_not_found(self):
-        repo = ExplainableResultRepo()  # empty — no items
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[])
         uc = ExplainStockUseCase()
 
         with pytest.raises(EntityNotFoundError, match="ScanResult.*AAPL"):
             uc.execute(uow, _make_query(symbol="AAPL"))
 
     def test_not_found_error_has_scan_result_entity(self):
-        repo = ExplainableResultRepo()
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[])
         uc = ExplainStockUseCase()
 
         with pytest.raises(EntityNotFoundError) as exc_info:
@@ -287,10 +303,11 @@ class TestSymbolNormalization:
     """Lowercase input is normalised to uppercase before querying."""
 
     def test_lowercase_symbol_normalised(self):
-        item = _make_item_with_outputs("AAPL", 85.0, {"minervini": _make_minervini_output()})
-        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("AAPL", 85.0, {"minervini": _make_minervini_screener_data()}),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query(symbol="aapl"))
@@ -298,10 +315,11 @@ class TestSymbolNormalization:
         assert result.explanation.symbol == "AAPL"
 
     def test_mixed_case_symbol_normalised(self):
-        item = _make_item_with_outputs("MSFT", 75.0, {"minervini": _make_minervini_output()})
-        repo = ExplainableResultRepo(items_by_symbol={"MSFT": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("MSFT", 75.0, {"minervini": _make_minervini_screener_data()}),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query(symbol="MsFt"))
@@ -316,10 +334,11 @@ class TestNoScreenerOutputs:
     """Stock with no screener outputs yields empty explanation tuple."""
 
     def test_empty_screener_outputs_gives_empty_explanations(self):
-        item = _make_item_with_outputs("AAPL", 0.0, screener_outputs={})
-        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("AAPL", 0.0, screeners={}),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -335,18 +354,18 @@ class TestUnknownScreener:
     """Screener not in _MAX_SCORES gets max_score=0.0 for all criteria."""
 
     def test_unknown_screener_criteria_have_zero_max_score(self):
-        custom_output = ScreenerOutputDomain(
-            screener_name="custom",
-            score=65.0,
-            passes=True,
-            rating="Buy",
-            breakdown={"pe_ratio": 10.0, "market_cap": 5.0},
-            details={},
-        )
-        item = _make_item_with_outputs("AAPL", 65.0, {"custom": custom_output})
-        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        custom_screener_data = {
+            "score": 65.0,
+            "passes": True,
+            "rating": "Buy",
+            "breakdown": {"pe_ratio": 10.0, "market_cap": 5.0},
+            "details": {},
+        }
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("AAPL", 65.0, {"custom": custom_screener_data}),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -358,24 +377,24 @@ class TestUnknownScreener:
 
     def test_volume_breakthrough_modifier_keys_have_zero_max_for_unknown(self):
         """Non-criteria keys like bonus_points get max_score=0.0."""
-        vb_output = ScreenerOutputDomain(
-            screener_name="volume_breakthrough",
-            score=70.0,
-            passes=True,
-            rating="Buy",
-            breakdown={
+        vb_screener_data = {
+            "score": 70.0,
+            "passes": True,
+            "rating": "Buy",
+            "breakdown": {
                 "five_year_high": 40.0,
                 "one_year_high": 30.0,
                 "since_ipo_high": 20.0,
                 "bonus_points": 5.0,
                 "decay_multiplier": 0.8,
             },
-            details={},
-        )
-        item = _make_item_with_outputs("AAPL", 70.0, {"volume_breakthrough": vb_output})
-        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+            "details": {},
+        }
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("AAPL", 70.0, {"volume_breakthrough": vb_screener_data}),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -398,17 +417,14 @@ class TestMultipleScreeners:
     """Verify multiple screener explanations are produced correctly."""
 
     def test_two_screeners_produce_two_explanations(self):
-        item = _make_item_with_outputs(
-            "AAPL",
-            82.5,
-            {
-                "minervini": _make_minervini_output(75.0),
-                "canslim": _make_canslim_output(80.0),
-            },
-        )
-        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("AAPL", 82.5, {
+                "minervini": _make_minervini_screener_data(75.0),
+                "canslim": _make_canslim_screener_data(80.0),
+            }),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -418,17 +434,14 @@ class TestMultipleScreeners:
         assert names == {"minervini", "canslim"}
 
     def test_each_screener_has_own_score_and_criteria(self):
-        item = _make_item_with_outputs(
-            "AAPL",
-            82.5,
-            {
-                "minervini": _make_minervini_output(75.0),
-                "canslim": _make_canslim_output(80.0),
-            },
-        )
-        repo = ExplainableResultRepo(items_by_symbol={"AAPL": item})
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[
+            _make_feature_row("AAPL", 82.5, {
+                "minervini": _make_minervini_screener_data(75.0),
+                "canslim": _make_canslim_screener_data(80.0),
+            }),
+        ])
         uc = ExplainStockUseCase()
 
         result = uc.execute(uow, _make_query())

@@ -15,10 +15,7 @@ from app.use_cases.scanning.get_filter_options import (
 
 from tests.unit.use_cases.conftest import (
     FakeFeatureStoreRepository,
-    FakeScanResultRepository,
     FakeUnitOfWork,
-    make_domain_item,
-    setup_scan,
 )
 
 
@@ -59,9 +56,9 @@ def _make_feature_row(symbol: str, score: float = 85.0, **details_overrides) -> 
     )
 
 
-def _setup_bound_scan(uow, feature_store, run_id=1, rows=None):
+def _setup_bound_scan(uow, feature_store, scan_id="scan-123", run_id=1, rows=None):
     """Create a scan bound to a feature run, with rows in the feature store."""
-    uow.scans.create(scan_id="scan-bound", status="completed", feature_run_id=run_id)
+    uow.scans.create(scan_id=scan_id, status="completed", feature_run_id=run_id)
     if rows is None:
         rows = [
             _make_feature_row("AAPL"),
@@ -78,8 +75,9 @@ class TestHappyPath:
     """Core business logic for retrieving filter options."""
 
     def test_returns_filter_options(self):
-        uow = FakeUnitOfWork()
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store)
         uc = GetFilterOptionsUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -87,9 +85,23 @@ class TestHappyPath:
         assert isinstance(result, GetFilterOptionsResult)
         assert isinstance(result.options, FilterOptions)
 
+    def test_returns_distinct_values(self):
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store)
+        uc = GetFilterOptionsUseCase()
+
+        result = uc.execute(uow, _make_query())
+
+        assert "Semiconductors" in result.options.ibd_industries
+        assert "Software" in result.options.ibd_industries
+        assert "Technology" in result.options.gics_sectors
+        assert "Buy" in result.options.ratings
+
     def test_empty_options_for_empty_scan(self):
-        uow = FakeUnitOfWork()
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[])
         uc = GetFilterOptionsUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -120,14 +132,27 @@ class TestScanNotFound:
         assert exc_info.value.identifier == "missing"
 
 
-class TestDualSourceRouting:
-    """Verify the use case routes to the correct data source."""
+class TestUnboundScanRejection:
+    """Scans without a feature run are rejected."""
+
+    def test_unbound_scan_raises_not_found(self):
+        """Scan without feature_run_id raises EntityNotFoundError."""
+        uow = FakeUnitOfWork()
+        uow.scans.create(scan_id="scan-legacy", status="completed")
+        uc = GetFilterOptionsUseCase()
+
+        with pytest.raises(EntityNotFoundError, match="FeatureRun"):
+            uc.execute(uow, _make_query(scan_id="scan-legacy"))
+
+
+class TestFeatureStoreRouting:
+    """Verify the use case queries the feature store correctly."""
 
     def test_bound_scan_queries_feature_store(self):
         """Scan with feature_run_id routes to feature store."""
         feature_store = FakeFeatureStoreRepository()
         uow = FakeUnitOfWork(feature_store=feature_store)
-        _setup_bound_scan(uow, feature_store)
+        _setup_bound_scan(uow, feature_store, scan_id="scan-bound")
         uc = GetFilterOptionsUseCase()
 
         result = uc.execute(uow, _make_query(scan_id="scan-bound"))
@@ -138,21 +163,8 @@ class TestDualSourceRouting:
         assert "Technology" in result.options.gics_sectors
         assert "Buy" in result.options.ratings
 
-    def test_unbound_scan_queries_legacy(self):
-        """Scan without feature_run_id routes to legacy scan_results."""
-        feature_store = FakeFeatureStoreRepository()
-        uow = FakeUnitOfWork(feature_store=feature_store)
-        setup_scan(uow)  # creates "scan-123" without feature_run_id
-        uc = GetFilterOptionsUseCase()
-
-        result = uc.execute(uow, _make_query())
-
-        # Legacy fake returns empty FilterOptions
-        assert result.options.ibd_industries == ()
-        assert result.options.gics_sectors == ()
-
-    def test_bound_scan_fallback_on_missing_run(self):
-        """If feature_run_id points to a deleted run, fall back to legacy."""
+    def test_missing_feature_run_raises_not_found(self):
+        """If feature_run_id points to a deleted run, raise EntityNotFoundError."""
         feature_store = FakeFeatureStoreRepository()
         uow = FakeUnitOfWork(feature_store=feature_store)
         # Bind to run_id=999 which doesn't exist in feature store
@@ -161,7 +173,5 @@ class TestDualSourceRouting:
         )
         uc = GetFilterOptionsUseCase()
 
-        result = uc.execute(uow, _make_query(scan_id="scan-orphan"))
-
-        # Fell back to legacy (empty options)
-        assert isinstance(result.options, FilterOptions)
+        with pytest.raises(EntityNotFoundError, match="FeatureRun"):
+            uc.execute(uow, _make_query(scan_id="scan-orphan"))

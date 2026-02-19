@@ -14,10 +14,7 @@ from app.use_cases.scanning.get_single_result import (
 
 from tests.unit.use_cases.conftest import (
     FakeFeatureStoreRepository,
-    FakeScanResultRepository,
     FakeUnitOfWork,
-    make_domain_item,
-    setup_scan,
 )
 
 
@@ -54,9 +51,9 @@ def _make_feature_row(symbol: str, score: float = 85.0) -> FeatureRow:
     )
 
 
-def _setup_bound_scan(uow, feature_store, run_id=1):
+def _setup_bound_scan(uow, feature_store, scan_id="scan-123", run_id=1):
     """Create a scan bound to a feature run, with rows in the feature store."""
-    uow.scans.create(scan_id="scan-bound", status="completed", feature_run_id=run_id)
+    uow.scans.create(scan_id=scan_id, status="completed", feature_run_id=run_id)
     feature_store.upsert_snapshot_rows(
         run_id,
         [_make_feature_row("AAPL"), _make_feature_row("MSFT", score=70.0)],
@@ -70,9 +67,9 @@ class TestHappyPath:
     """Core business logic for retrieving a single scan result."""
 
     def test_returns_matching_item(self):
-        items = [make_domain_item("AAPL"), make_domain_item("MSFT")]
-        uow = FakeUnitOfWork(scan_results=FakeScanResultRepository(items=items))
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store)
         uc = GetSingleResultUseCase()
 
         result = uc.execute(uow, _make_query(symbol="AAPL"))
@@ -81,9 +78,9 @@ class TestHappyPath:
         assert result.item.symbol == "AAPL"
 
     def test_symbol_is_case_insensitive(self):
-        items = [make_domain_item("AAPL")]
-        uow = FakeUnitOfWork(scan_results=FakeScanResultRepository(items=items))
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store)
         uc = GetSingleResultUseCase()
 
         result = uc.execute(uow, _make_query(symbol="aapl"))
@@ -91,12 +88,13 @@ class TestHappyPath:
         assert result.item.symbol == "AAPL"
 
     def test_symbol_not_found_raises_error(self):
-        uow = FakeUnitOfWork(scan_results=FakeScanResultRepository(items=[]))
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store)
         uc = GetSingleResultUseCase()
 
-        with pytest.raises(EntityNotFoundError, match="ScanResult.*AAPL"):
-            uc.execute(uow, _make_query(symbol="AAPL"))
+        with pytest.raises(EntityNotFoundError, match="ScanResult.*ZZZZ"):
+            uc.execute(uow, _make_query(symbol="ZZZZ"))
 
 
 class TestScanNotFound:
@@ -120,15 +118,27 @@ class TestScanNotFound:
         assert exc_info.value.identifier == "missing"
 
 
-class TestDualSourceRouting:
-    """Verify the use case routes to the correct data source."""
+class TestUnboundScanRejection:
+    """Scans without a feature run are rejected."""
+
+    def test_unbound_scan_raises_not_found(self):
+        """Scan without feature_run_id raises EntityNotFoundError."""
+        uow = FakeUnitOfWork()
+        uow.scans.create(scan_id="scan-legacy", status="completed")
+        uc = GetSingleResultUseCase()
+
+        with pytest.raises(EntityNotFoundError, match="FeatureRun"):
+            uc.execute(uow, _make_query(scan_id="scan-legacy"))
+
+
+class TestFeatureStoreRouting:
+    """Verify the use case queries the feature store correctly."""
 
     def test_bound_scan_queries_feature_store(self):
         """Scan with feature_run_id routes to feature store."""
         feature_store = FakeFeatureStoreRepository()
-        legacy_repo = FakeScanResultRepository()
-        uow = FakeUnitOfWork(scan_results=legacy_repo, feature_store=feature_store)
-        _setup_bound_scan(uow, feature_store)
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, scan_id="scan-bound")
         uc = GetSingleResultUseCase()
 
         result = uc.execute(uow, _make_query(scan_id="scan-bound", symbol="AAPL"))
@@ -136,39 +146,23 @@ class TestDualSourceRouting:
         assert result.item.symbol == "AAPL"
         assert result.item.rating == "Buy"
 
-    def test_unbound_scan_queries_legacy(self):
-        """Scan without feature_run_id routes to legacy scan_results."""
-        items = [make_domain_item("AAPL")]
-        legacy_repo = FakeScanResultRepository(items=items)
-        uow = FakeUnitOfWork(scan_results=legacy_repo)
-        setup_scan(uow)
-        uc = GetSingleResultUseCase()
-
-        result = uc.execute(uow, _make_query(symbol="AAPL"))
-
-        assert result.item.symbol == "AAPL"
-
-    def test_bound_scan_fallback_on_missing_run(self):
-        """If feature_run_id points to a deleted run, fall back to legacy."""
+    def test_missing_feature_run_raises_not_found(self):
+        """If feature_run_id points to a deleted run, raise EntityNotFoundError."""
         feature_store = FakeFeatureStoreRepository()
-        legacy_repo = FakeScanResultRepository(
-            items=[make_domain_item("FALLBACK")]
-        )
-        uow = FakeUnitOfWork(scan_results=legacy_repo, feature_store=feature_store)
+        uow = FakeUnitOfWork(feature_store=feature_store)
         uow.scans.create(
             scan_id="scan-orphan", status="completed", feature_run_id=999
         )
         uc = GetSingleResultUseCase()
 
-        result = uc.execute(uow, _make_query(scan_id="scan-orphan", symbol="FALLBACK"))
-
-        assert result.item.symbol == "FALLBACK"
+        with pytest.raises(EntityNotFoundError, match="FeatureRun"):
+            uc.execute(uow, _make_query(scan_id="scan-orphan", symbol="AAPL"))
 
     def test_bound_scan_symbol_not_found_raises_error(self):
         """Feature store path raises EntityNotFoundError for missing symbol."""
         feature_store = FakeFeatureStoreRepository()
         uow = FakeUnitOfWork(feature_store=feature_store)
-        _setup_bound_scan(uow, feature_store)
+        _setup_bound_scan(uow, feature_store, scan_id="scan-bound")
         uc = GetSingleResultUseCase()
 
         with pytest.raises(EntityNotFoundError, match="ScanResult.*ZZZZ"):

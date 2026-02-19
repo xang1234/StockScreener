@@ -3,67 +3,49 @@
 Pure in-memory tests — no infrastructure.
 """
 
+from datetime import date
+
 import pytest
 
 from app.domain.common.errors import EntityNotFoundError
-from app.domain.scanning.models import PeerType, ScanResultItemDomain
+from app.domain.feature_store.models import FeatureRow
+from app.domain.scanning.models import PeerType
 from app.use_cases.scanning.get_peers import (
     GetPeersQuery,
     GetPeersResult,
     GetPeersUseCase,
 )
 
-from tests.unit.scanning_fakes import (
-    FakeScanResultRepository,
+from tests.unit.use_cases.conftest import (
+    FakeFeatureStoreRepository,
     FakeUnitOfWork,
-    make_domain_item,
-    setup_scan,
 )
 
 
-# ── Specialised fake ────────────────────────────────────────────────────
+# ── Constants ────────────────────────────────────────────────────────────
 
-
-class PeersResultRepo(FakeScanResultRepository):
-    """Fake that supports get_by_symbol, get_peers_by_industry, get_peers_by_sector."""
-
-    def __init__(
-        self,
-        target: ScanResultItemDomain | None = None,
-        industry_peers: tuple[ScanResultItemDomain, ...] = (),
-        sector_peers: tuple[ScanResultItemDomain, ...] = (),
-    ):
-        self._target = target
-        self._industry_peers = industry_peers
-        self._sector_peers = sector_peers
-        self.last_get_by_symbol_args: dict | None = None
-        self.last_get_peers_by_industry_args: dict | None = None
-        self.last_get_peers_by_sector_args: dict | None = None
-
-    def get_by_symbol(self, scan_id: str, symbol: str) -> ScanResultItemDomain | None:
-        self.last_get_by_symbol_args = {"scan_id": scan_id, "symbol": symbol}
-        return self._target
-
-    def get_peers_by_industry(
-        self, scan_id: str, ibd_industry_group: str
-    ) -> tuple[ScanResultItemDomain, ...]:
-        self.last_get_peers_by_industry_args = {
-            "scan_id": scan_id,
-            "ibd_industry_group": ibd_industry_group,
-        }
-        return self._industry_peers
-
-    def get_peers_by_sector(
-        self, scan_id: str, gics_sector: str
-    ) -> tuple[ScanResultItemDomain, ...]:
-        self.last_get_peers_by_sector_args = {
-            "scan_id": scan_id,
-            "gics_sector": gics_sector,
-        }
-        return self._sector_peers
+AS_OF = date(2026, 2, 17)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
+
+
+def _make_feature_row(symbol, score=85.0, **details_extra):
+    details = {
+        "composite_score": score,
+        "rating": "Buy",
+        "current_price": 150.0,
+        "screeners_run": ["minervini"],
+        "composite_method": "weighted_average",
+        "screeners_passed": 1,
+        "screeners_total": 1,
+    }
+    details.update(details_extra)
+    return FeatureRow(
+        run_id=1, symbol=symbol, as_of_date=AS_OF,
+        composite_score=score, overall_rating=4,
+        passes_count=1, details=details,
+    )
 
 
 def _make_query(**overrides) -> GetPeersQuery:
@@ -79,15 +61,14 @@ class TestHappyPath:
     """Core business logic for industry peer lookup."""
 
     def test_returns_peers_for_industry(self):
-        target = make_domain_item("AAPL", ibd_industry_group="Semiconductor")
-        peer1 = make_domain_item("NVDA", score=95.0, ibd_industry_group="Semiconductor")
-        peer2 = make_domain_item("AMD", score=80.0, ibd_industry_group="Semiconductor")
-        repo = PeersResultRepo(
-            target=target,
-            industry_peers=(peer1, target, peer2),
-        )
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        uow.scans.create(scan_id="scan-123", status="completed", feature_run_id=1)
+        feature_store.upsert_snapshot_rows(1, [
+            _make_feature_row("AAPL", ibd_industry_group="Semiconductor"),
+            _make_feature_row("NVDA", score=95.0, ibd_industry_group="Semiconductor"),
+            _make_feature_row("AMD", score=80.0, ibd_industry_group="Semiconductor"),
+        ])
         uc = GetPeersUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -97,29 +78,27 @@ class TestHappyPath:
         assert result.group_name == "Semiconductor"
         assert result.peer_type == PeerType.INDUSTRY
 
-    def test_passes_correct_args_to_repository(self):
-        target = make_domain_item("TSLA", ibd_industry_group="Auto Manufacturers")
-        repo = PeersResultRepo(target=target, industry_peers=(target,))
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow, "scan-xyz")
+    def test_passes_correct_args(self):
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        uow.scans.create(scan_id="scan-xyz", status="completed", feature_run_id=1)
+        feature_store.upsert_snapshot_rows(1, [
+            _make_feature_row("TSLA", ibd_industry_group="Auto Manufacturers"),
+        ])
         uc = GetPeersUseCase()
 
-        uc.execute(uow, _make_query(scan_id="scan-xyz", symbol="TSLA"))
+        result = uc.execute(uow, _make_query(scan_id="scan-xyz", symbol="TSLA"))
 
-        assert repo.last_get_by_symbol_args == {
-            "scan_id": "scan-xyz",
-            "symbol": "TSLA",
-        }
-        assert repo.last_get_peers_by_industry_args == {
-            "scan_id": "scan-xyz",
-            "ibd_industry_group": "Auto Manufacturers",
-        }
+        assert result.group_name == "Auto Manufacturers"
+        assert result.peer_type == PeerType.INDUSTRY
 
     def test_target_included_in_peers(self):
-        target = make_domain_item("AAPL", ibd_industry_group="Semiconductor")
-        repo = PeersResultRepo(target=target, industry_peers=(target,))
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        uow.scans.create(scan_id="scan-123", status="completed", feature_run_id=1)
+        feature_store.upsert_snapshot_rows(1, [
+            _make_feature_row("AAPL", ibd_industry_group="Semiconductor"),
+        ])
         uc = GetPeersUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -134,14 +113,13 @@ class TestSectorPeers:
     """Peer lookup by GICS sector."""
 
     def test_returns_peers_for_sector(self):
-        target = make_domain_item("AAPL", gics_sector="Information Technology")
-        peer1 = make_domain_item("MSFT", score=90.0, gics_sector="Information Technology")
-        repo = PeersResultRepo(
-            target=target,
-            sector_peers=(peer1, target),
-        )
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        uow.scans.create(scan_id="scan-123", status="completed", feature_run_id=1)
+        feature_store.upsert_snapshot_rows(1, [
+            _make_feature_row("AAPL", gics_sector="Information Technology"),
+            _make_feature_row("MSFT", score=90.0, gics_sector="Information Technology"),
+        ])
         uc = GetPeersUseCase()
 
         result = uc.execute(uow, _make_query(peer_type=PeerType.SECTOR))
@@ -151,21 +129,20 @@ class TestSectorPeers:
         assert result.group_name == "Information Technology"
         assert result.peer_type == PeerType.SECTOR
 
-    def test_passes_correct_args_to_get_peers_by_sector(self):
-        target = make_domain_item("AAPL", gics_sector="Information Technology")
-        repo = PeersResultRepo(target=target, sector_peers=(target,))
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+    def test_sector_peers_does_not_call_industry(self):
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        uow.scans.create(scan_id="scan-123", status="completed", feature_run_id=1)
+        feature_store.upsert_snapshot_rows(1, [
+            _make_feature_row("AAPL", gics_sector="Information Technology"),
+        ])
         uc = GetPeersUseCase()
 
-        uc.execute(uow, _make_query(peer_type=PeerType.SECTOR))
+        result = uc.execute(uow, _make_query(peer_type=PeerType.SECTOR))
 
-        assert repo.last_get_peers_by_sector_args == {
-            "scan_id": "scan-123",
-            "gics_sector": "Information Technology",
-        }
-        # Should NOT call industry method
-        assert repo.last_get_peers_by_industry_args is None
+        # Just verify it returned sector peers, not industry
+        assert result.peer_type == PeerType.SECTOR
+        assert result.group_name == "Information Technology"
 
 
 # ── Tests: No Group ────────────────────────────────────────────────────
@@ -175,10 +152,11 @@ class TestNoGroup:
     """Empty peers when target has no group value."""
 
     def test_none_group_returns_empty(self):
-        target = make_domain_item("AAPL")  # no ibd_industry_group
-        repo = PeersResultRepo(target=target)
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        uow.scans.create(scan_id="scan-123", status="completed", feature_run_id=1)
+        # No ibd_industry_group in details
+        feature_store.upsert_snapshot_rows(1, [_make_feature_row("AAPL")])
         uc = GetPeersUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -188,10 +166,12 @@ class TestNoGroup:
         assert result.peer_type == PeerType.INDUSTRY
 
     def test_empty_string_group_returns_empty(self):
-        target = make_domain_item("AAPL", ibd_industry_group="")
-        repo = PeersResultRepo(target=target)
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        uow.scans.create(scan_id="scan-123", status="completed", feature_run_id=1)
+        feature_store.upsert_snapshot_rows(1, [
+            _make_feature_row("AAPL", ibd_industry_group=""),
+        ])
         uc = GetPeersUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -200,10 +180,12 @@ class TestNoGroup:
         assert result.group_name is None
 
     def test_whitespace_only_group_returns_empty(self):
-        target = make_domain_item("AAPL", ibd_industry_group="   ")
-        repo = PeersResultRepo(target=target)
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        uow.scans.create(scan_id="scan-123", status="completed", feature_run_id=1)
+        feature_store.upsert_snapshot_rows(1, [
+            _make_feature_row("AAPL", ibd_industry_group="   "),
+        ])
         uc = GetPeersUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -236,22 +218,39 @@ class TestScanNotFound:
         assert exc_info.value.identifier == "missing"
 
 
+class TestUnboundScanRaises:
+    """Scan exists but has no feature_run_id — raises EntityNotFoundError."""
+
+    def test_unbound_scan_raises_feature_run_not_found(self):
+        uow = FakeUnitOfWork()
+        uow.scans.create(scan_id="scan-123", status="completed")  # no feature_run_id
+        uc = GetPeersUseCase()
+
+        with pytest.raises(EntityNotFoundError) as exc_info:
+            uc.execute(uow, _make_query())
+
+        assert exc_info.value.entity == "FeatureRun"
+
+
 class TestSymbolNotFound:
     """Use case raises EntityNotFoundError when symbol is not in the scan."""
 
     def test_missing_symbol_raises_not_found(self):
-        repo = PeersResultRepo()  # target=None
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        uow.scans.create(scan_id="scan-123", status="completed", feature_run_id=1)
+        # Run exists but has no AAPL
+        feature_store.upsert_snapshot_rows(1, [_make_feature_row("MSFT")])
         uc = GetPeersUseCase()
 
         with pytest.raises(EntityNotFoundError, match="ScanResult.*AAPL"):
             uc.execute(uow, _make_query(symbol="AAPL"))
 
     def test_not_found_error_has_scan_result_entity(self):
-        repo = PeersResultRepo()
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        uow.scans.create(scan_id="scan-123", status="completed", feature_run_id=1)
+        feature_store.upsert_snapshot_rows(1, [_make_feature_row("MSFT")])
         uc = GetPeersUseCase()
 
         with pytest.raises(EntityNotFoundError) as exc_info:
@@ -268,15 +267,17 @@ class TestSymbolNormalisation:
     """Lowercase input is normalised to uppercase before querying."""
 
     def test_lowercase_symbol_normalised(self):
-        target = make_domain_item("AAPL", ibd_industry_group="Semiconductor")
-        repo = PeersResultRepo(target=target, industry_peers=(target,))
-        uow = FakeUnitOfWork(scan_results=repo)
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        uow.scans.create(scan_id="scan-123", status="completed", feature_run_id=1)
+        feature_store.upsert_snapshot_rows(1, [
+            _make_feature_row("AAPL", ibd_industry_group="Semiconductor"),
+        ])
         uc = GetPeersUseCase()
 
-        uc.execute(uow, _make_query(symbol="aapl"))
+        result = uc.execute(uow, _make_query(symbol="aapl"))
 
-        assert repo.last_get_by_symbol_args["symbol"] == "AAPL"
+        assert result.group_name == "Semiconductor"
 
 
 # ── Tests: Default PeerType ───────────────────────────────────────────

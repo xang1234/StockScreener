@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 
 
 @register_screener
-class MinerviniScannerV2(BaseStockScreener):
+class MinerviniScanner(BaseStockScreener):
     """
-    Minervini Template Scanner - V2 (Multi-Screener Architecture).
+    Minervini Template Scanner.
 
     Implements Mark Minervini's stock selection criteria:
     1. RS Rating > 70 (preferably > 80)

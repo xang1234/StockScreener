@@ -2,17 +2,11 @@
 
 Business rules:
   1. Verify the scan exists (raise EntityNotFoundError if not)
-  2. Route to the correct data source:
-     - Bound scans (feature_run_id set) -> query feature store
-     - Unbound scans (legacy) -> query scan_results table
+  2. Verify the scan is bound to a feature run
   3. Look up the target symbol (raise EntityNotFoundError if not found)
   4. Read the group value from extended_fields based on peer_type
   5. If no group value, return empty result
-  6. Delegate to the appropriate repo method (industry or sector)
-
-Note: this endpoint makes TWO dependent calls (lookup target, then query
-peers), so it uses a ``use_feature_store`` flag to ensure both calls
-use the same data source.
+  6. Delegate to the appropriate feature store method (industry or sector)
 
 The use case depends ONLY on domain ports — never on SQLAlchemy,
 FastAPI, or any other infrastructure.
@@ -82,42 +76,22 @@ class GetPeersUseCase:
             if scan is None:
                 raise EntityNotFoundError("Scan", query.scan_id)
 
-            # Determine data source — flag ensures both calls use
-            # the same source (target lookup + peers query).
-            use_feature_store = bool(scan.feature_run_id)
+            if not scan.feature_run_id:
+                raise EntityNotFoundError(
+                    "FeatureRun", f"scan {query.scan_id} has no bound feature run"
+                )
+
+            logger.info(
+                "Scan %s: querying peers from feature_store (run_id=%d)",
+                query.scan_id,
+                scan.feature_run_id,
+            )
 
             # 2. Look up target symbol
-            if use_feature_store:
-                logger.info(
-                    "Scan %s: routing peers to feature_store (run_id=%d)",
-                    query.scan_id,
-                    scan.feature_run_id,
-                )
-                try:
-                    target = uow.feature_store.get_by_symbol_for_run(
-                        scan.feature_run_id,
-                        query.symbol,
-                    )
-                except EntityNotFoundError:
-                    logger.warning(
-                        "Feature run %d not found for scan %s, falling back to legacy",
-                        scan.feature_run_id,
-                        query.scan_id,
-                    )
-                    use_feature_store = False
-                    target = uow.scan_results.get_by_symbol(
-                        scan_id=query.scan_id,
-                        symbol=query.symbol,
-                    )
-            else:
-                logger.debug(
-                    "Scan %s: routing peers to legacy scan_results",
-                    query.scan_id,
-                )
-                target = uow.scan_results.get_by_symbol(
-                    scan_id=query.scan_id,
-                    symbol=query.symbol,
-                )
+            target = uow.feature_store.get_by_symbol_for_run(
+                scan.feature_run_id,
+                query.symbol,
+            )
 
             if target is None:
                 raise EntityNotFoundError("ScanResult", query.symbol)
@@ -132,25 +106,15 @@ class GetPeersUseCase:
                     peers=(), group_name=None, peer_type=query.peer_type
                 )
 
-            # 5. Delegate to appropriate repo method (same source as target)
-            if use_feature_store:
-                if query.peer_type == PeerType.INDUSTRY:
-                    peers = uow.feature_store.get_peers_by_industry_for_run(
-                        scan.feature_run_id, group_value
-                    )
-                else:
-                    peers = uow.feature_store.get_peers_by_sector_for_run(
-                        scan.feature_run_id, group_value
-                    )
+            # 5. Delegate to appropriate feature store method
+            if query.peer_type == PeerType.INDUSTRY:
+                peers = uow.feature_store.get_peers_by_industry_for_run(
+                    scan.feature_run_id, group_value
+                )
             else:
-                if query.peer_type == PeerType.INDUSTRY:
-                    peers = uow.scan_results.get_peers_by_industry(
-                        query.scan_id, group_value
-                    )
-                else:
-                    peers = uow.scan_results.get_peers_by_sector(
-                        query.scan_id, group_value
-                    )
+                peers = uow.feature_store.get_peers_by_sector_for_run(
+                    scan.feature_run_id, group_value
+                )
 
         return GetPeersResult(
             peers=peers, group_name=group_value, peer_type=query.peer_type

@@ -1,16 +1,16 @@
 """Stock data API endpoints"""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
 from typing import Optional
 from datetime import datetime, timedelta
 import logging
 
 from ...database import get_db
+from ...infra.db.uow import SqlUnitOfWork
 from ...services.data_fetcher import DataFetcher
 from ...services.yfinance_service import yfinance_service
 from ...schemas.stock import StockInfo, StockFundamentals, StockTechnicals, StockData
-from ...models.scan_result import Scan, ScanResult
+from ...wiring.bootstrap import get_uow
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -183,10 +183,12 @@ async def get_stock_industry(symbol: str, db: Session = Depends(get_db)):
 
 
 @router.get("/{symbol}/chart-data")
-async def get_chart_data(symbol: str, db: Session = Depends(get_db)):
+async def get_chart_data(
+    symbol: str,
+    uow: SqlUnitOfWork = Depends(get_uow),
+):
     """
-    Get all chart modal data in a single call.
-    Prioritizes scan_results lookup (fast), falls back to computation (slow).
+    Get all chart modal data in a single call from the feature store.
 
     Returns all data needed for the chart modal:
     - Basic info (symbol, name, price)
@@ -198,165 +200,65 @@ async def get_chart_data(symbol: str, db: Session = Depends(get_db)):
     """
     symbol = symbol.upper()
 
-    # Try to get from recent scan_results (fast path)
-    # Look for completed scans from the last 7 days
-    cutoff_date = datetime.utcnow() - timedelta(days=7)
-
-    # Get the most recent completed scan
-    recent_scan = db.query(Scan).filter(
-        Scan.status == "completed",
-        Scan.completed_at >= cutoff_date
-    ).order_by(desc(Scan.completed_at)).first()
-
-    scan_result = None
-    if recent_scan:
-        scan_result = db.query(ScanResult).filter(
-            ScanResult.scan_id == recent_scan.scan_id,
-            ScanResult.symbol == symbol
-        ).first()
-
-    if scan_result:
-        # Fast path: return data from scan_results
-        details = scan_result.details or {}
-
-        return {
-            "source": "scan_results",
-            "scan_date": recent_scan.completed_at.isoformat() if recent_scan.completed_at else None,
-            # Basic info
-            "symbol": scan_result.symbol,
-            "company_name": details.get("company_name"),
-            "current_price": scan_result.price,
-            # Industry classification
-            "gics_sector": scan_result.gics_sector,
-            "gics_industry": scan_result.gics_industry,
-            "ibd_industry_group": scan_result.ibd_industry_group,
-            "ibd_group_rank": scan_result.ibd_group_rank,
-            # RS data
-            "rs_rating": scan_result.rs_rating,
-            "rs_rating_1m": scan_result.rs_rating_1m,
-            "rs_rating_3m": scan_result.rs_rating_3m,
-            "rs_rating_12m": scan_result.rs_rating_12m,
-            "rs_trend": scan_result.rs_trend,
-            # Technical data
-            "stage": scan_result.stage,
-            "adr_percent": scan_result.adr_percent,
-            "eps_rating": scan_result.eps_rating,
-            # Scores
-            "minervini_score": scan_result.minervini_score,
-            "composite_score": scan_result.composite_score,
-            # VCP data from details
-            "vcp_detected": details.get("vcp_detected", False),
-            "vcp_score": details.get("vcp_score"),
-            "vcp_pivot": details.get("vcp_pivot"),
-            "vcp_ready_for_breakout": details.get("vcp_ready_for_breakout", False),
-            # MA data from details
-            "ma_alignment": details.get("ma_alignment"),
-            "passes_template": details.get("passes_template"),
-            # Growth metrics
-            "eps_growth_qq": scan_result.eps_growth_qq,
-            "sales_growth_qq": scan_result.sales_growth_qq,
-            "eps_growth_yy": scan_result.eps_growth_yy,
-            "sales_growth_yy": scan_result.sales_growth_yy,
-        }
-
-    # Slow path: compute data from individual services
-    logger.info(f"Chart data for {symbol} not in recent scans, computing...")
-
-    try:
-        # Get basic stock info
-        info = yfinance_service.get_stock_info(symbol)
-        if not info:
+    with uow:
+        # Find the latest published feature run
+        latest_run = uow.feature_runs.get_latest_published()
+        if latest_run is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"Unable to fetch data for {symbol}"
+                detail=f"No published scan data available for {symbol}",
             )
 
-        # Get fundamentals
-        from ...services.fundamentals_cache_service import FundamentalsCacheService
-        cache = FundamentalsCacheService.get_instance()
-        fundamentals = cache.get_fundamentals(symbol) or {}
-
-        # Get technicals
-        fetcher = DataFetcher(db)
-        technicals = fetcher.get_stock_technicals(symbol) or {}
-
-        # Get industry classification
-        classification = fetcher.get_industry_classification(symbol) or {}
-
-        # Get IBD industry group
-        from ...services.ibd_industry_service import IBDIndustryService
-        try:
-            ibd_group = IBDIndustryService.get_industry_group(db, symbol)
-        except Exception:
-            ibd_group = None
-
-        # Get RS rating data
-        try:
-            from ...services.rs_rating_service import RSRatingService
-            rs_service = RSRatingService()
-            rs_data = rs_service.get_rs_rating(symbol) or {}
-        except Exception:
-            rs_data = {}
-
-        # Get Minervini scan data for VCP and ADR
-        try:
-            from ...scanners.minervini_scanner_v2 import MinerviniScannerV2
-            scanner = MinerviniScannerV2(db)
-            minervini_result = scanner.scan_stock(symbol) or {}
-        except Exception as e:
-            logger.warning(f"Could not get Minervini scan for {symbol}: {e}")
-            minervini_result = {}
-
-        vcp_data = minervini_result.get("vcp", {}) or {}
-
-        return {
-            "source": "computed",
-            "scan_date": None,
-            # Basic info
-            "symbol": symbol,
-            "company_name": info.get("name"),
-            "current_price": technicals.get("current_price") or info.get("current_price"),
-            # Industry classification
-            "gics_sector": info.get("sector"),
-            "gics_industry": info.get("industry"),
-            "ibd_industry_group": ibd_group,
-            "ibd_group_rank": None,  # Would require additional query
-            # RS data
-            "rs_rating": rs_data.get("rs_rating") or technicals.get("rs_rating"),
-            "rs_rating_1m": rs_data.get("rs_1m"),
-            "rs_rating_3m": rs_data.get("rs_3m"),
-            "rs_rating_12m": rs_data.get("rs_12m"),
-            "rs_trend": rs_data.get("rs_trend"),
-            # Technical data
-            "stage": technicals.get("stage"),
-            "adr_percent": minervini_result.get("adr_percent"),
-            "eps_rating": fundamentals.get("eps_rating"),
-            # Scores
-            "minervini_score": minervini_result.get("score"),
-            "composite_score": None,
-            # VCP data
-            "vcp_detected": vcp_data.get("detected", False),
-            "vcp_score": vcp_data.get("score") or technicals.get("vcp_score"),
-            "vcp_pivot": vcp_data.get("pivot_price"),
-            "vcp_ready_for_breakout": vcp_data.get("ready_for_breakout", False),
-            # MA data
-            "ma_alignment": minervini_result.get("ma_alignment"),
-            "passes_template": minervini_result.get("passes_template"),
-            # Growth metrics
-            "eps_growth_qq": fundamentals.get("eps_growth_quarterly"),
-            "sales_growth_qq": fundamentals.get("sales_growth_qq"),
-            "eps_growth_yy": fundamentals.get("eps_growth_annual"),
-            "sales_growth_yy": fundamentals.get("sales_growth_yy"),
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error computing chart data for {symbol}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching chart data for {symbol}: {str(e)}"
+        item = uow.feature_store.get_by_symbol_for_run(
+            latest_run.id, symbol
         )
+        if item is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No scan data found for {symbol}",
+            )
+
+    ef = item.extended_fields or {}
+
+    return {
+        "source": "feature_store",
+        "scan_date": latest_run.completed_at.isoformat() if latest_run.completed_at else None,
+        # Basic info
+        "symbol": item.symbol,
+        "company_name": ef.get("company_name"),
+        "current_price": item.current_price,
+        # Industry classification
+        "gics_sector": ef.get("gics_sector"),
+        "gics_industry": ef.get("gics_industry"),
+        "ibd_industry_group": ef.get("ibd_industry_group"),
+        "ibd_group_rank": ef.get("ibd_group_rank"),
+        # RS data
+        "rs_rating": ef.get("rs_rating"),
+        "rs_rating_1m": ef.get("rs_rating_1m"),
+        "rs_rating_3m": ef.get("rs_rating_3m"),
+        "rs_rating_12m": ef.get("rs_rating_12m"),
+        "rs_trend": ef.get("rs_trend"),
+        # Technical data
+        "stage": ef.get("stage"),
+        "adr_percent": ef.get("adr_percent"),
+        "eps_rating": ef.get("eps_rating"),
+        # Scores
+        "minervini_score": ef.get("minervini_score"),
+        "composite_score": item.composite_score,
+        # VCP data
+        "vcp_detected": ef.get("vcp_detected", False),
+        "vcp_score": ef.get("vcp_score"),
+        "vcp_pivot": ef.get("vcp_pivot"),
+        "vcp_ready_for_breakout": ef.get("vcp_ready_for_breakout", False),
+        # MA data
+        "ma_alignment": ef.get("ma_alignment"),
+        "passes_template": ef.get("passes_template"),
+        # Growth metrics
+        "eps_growth_qq": ef.get("eps_growth_qq"),
+        "sales_growth_qq": ef.get("sales_growth_qq"),
+        "eps_growth_yy": ef.get("eps_growth_yy"),
+        "sales_growth_yy": ef.get("sales_growth_yy"),
+    }
 
 
 @router.get("/{symbol}/history")

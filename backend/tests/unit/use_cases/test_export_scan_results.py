@@ -15,10 +15,7 @@ from app.use_cases.scanning.export_scan_results import (
 
 from tests.unit.use_cases.conftest import (
     FakeFeatureStoreRepository,
-    FakeScanResultRepository,
     FakeUnitOfWork,
-    make_domain_item,
-    setup_scan,
 )
 
 
@@ -55,13 +52,12 @@ def _make_feature_row(symbol: str, score: float = 85.0) -> FeatureRow:
     )
 
 
-def _setup_bound_scan(uow, feature_store, run_id=1):
+def _setup_bound_scan(uow, feature_store, scan_id="scan-123", run_id=1, rows=None):
     """Create a scan bound to a feature run, with rows in the feature store."""
-    uow.scans.create(scan_id="scan-bound", status="completed", feature_run_id=run_id)
-    feature_store.upsert_snapshot_rows(
-        run_id,
-        [_make_feature_row("AAPL"), _make_feature_row("MSFT", score=70.0)],
-    )
+    uow.scans.create(scan_id=scan_id, status="completed", feature_run_id=run_id)
+    if rows is None:
+        rows = [_make_feature_row("AAPL"), _make_feature_row("MSFT", score=70.0)]
+    feature_store.upsert_snapshot_rows(run_id, rows)
 
 
 # ── Tests ────────────────────────────────────────────────────────────────
@@ -71,9 +67,9 @@ class TestHappyPath:
     """Core business logic for exporting scan results."""
 
     def test_returns_csv_bytes(self):
-        items = [make_domain_item("AAPL"), make_domain_item("MSFT")]
-        uow = FakeUnitOfWork(scan_results=FakeScanResultRepository(items=items))
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store)
         uc = ExportScanResultsUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -86,9 +82,9 @@ class TestHappyPath:
         assert result.content.startswith(b"\xef\xbb\xbf")
 
     def test_csv_contains_header_and_data_rows(self):
-        items = [make_domain_item("AAPL")]
-        uow = FakeUnitOfWork(scan_results=FakeScanResultRepository(items=items))
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[_make_feature_row("AAPL")])
         uc = ExportScanResultsUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -101,8 +97,9 @@ class TestHappyPath:
         assert "AAPL" in lines[1]
 
     def test_empty_scan_exports_header_only(self):
-        uow = FakeUnitOfWork(scan_results=FakeScanResultRepository(items=[]))
-        setup_scan(uow)
+        feature_store = FakeFeatureStoreRepository()
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, rows=[])
         uc = ExportScanResultsUseCase()
 
         result = uc.execute(uow, _make_query())
@@ -133,15 +130,27 @@ class TestScanNotFound:
         assert exc_info.value.identifier == "missing"
 
 
-class TestDualSourceRouting:
-    """Verify the use case routes to the correct data source."""
+class TestUnboundScanRejection:
+    """Scans without a feature run are rejected."""
+
+    def test_unbound_scan_raises_not_found(self):
+        """Scan without feature_run_id raises EntityNotFoundError."""
+        uow = FakeUnitOfWork()
+        uow.scans.create(scan_id="scan-legacy", status="completed")
+        uc = ExportScanResultsUseCase()
+
+        with pytest.raises(EntityNotFoundError, match="FeatureRun"):
+            uc.execute(uow, _make_query(scan_id="scan-legacy"))
+
+
+class TestFeatureStoreRouting:
+    """Verify the use case queries the feature store correctly."""
 
     def test_bound_scan_queries_feature_store(self):
         """Scan with feature_run_id routes to feature store for export."""
         feature_store = FakeFeatureStoreRepository()
-        legacy_repo = FakeScanResultRepository()
-        uow = FakeUnitOfWork(scan_results=legacy_repo, feature_store=feature_store)
-        _setup_bound_scan(uow, feature_store)
+        uow = FakeUnitOfWork(feature_store=feature_store)
+        _setup_bound_scan(uow, feature_store, scan_id="scan-bound")
         uc = ExportScanResultsUseCase()
 
         result = uc.execute(uow, _make_query(scan_id="scan-bound"))
@@ -153,32 +162,14 @@ class TestDualSourceRouting:
         assert "AAPL" in csv_text
         assert "MSFT" in csv_text
 
-    def test_unbound_scan_queries_legacy(self):
-        """Scan without feature_run_id routes to legacy scan_results."""
-        items = [make_domain_item("GOOGL")]
-        legacy_repo = FakeScanResultRepository(items=items)
-        uow = FakeUnitOfWork(scan_results=legacy_repo)
-        setup_scan(uow)
-        uc = ExportScanResultsUseCase()
-
-        result = uc.execute(uow, _make_query())
-
-        csv_text = result.content.decode("utf-8-sig")
-        assert "GOOGL" in csv_text
-
-    def test_bound_scan_fallback_on_missing_run(self):
-        """If feature_run_id points to a deleted run, fall back to legacy."""
+    def test_missing_feature_run_raises_not_found(self):
+        """If feature_run_id points to a deleted run, raise EntityNotFoundError."""
         feature_store = FakeFeatureStoreRepository()
-        legacy_repo = FakeScanResultRepository(
-            items=[make_domain_item("FALLBACK")]
-        )
-        uow = FakeUnitOfWork(scan_results=legacy_repo, feature_store=feature_store)
+        uow = FakeUnitOfWork(feature_store=feature_store)
         uow.scans.create(
             scan_id="scan-orphan", status="completed", feature_run_id=999
         )
         uc = ExportScanResultsUseCase()
 
-        result = uc.execute(uow, _make_query(scan_id="scan-orphan"))
-
-        csv_text = result.content.decode("utf-8-sig")
-        assert "FALLBACK" in csv_text
+        with pytest.raises(EntityNotFoundError, match="FeatureRun"):
+            uc.execute(uow, _make_query(scan_id="scan-orphan"))
