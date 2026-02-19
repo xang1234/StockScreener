@@ -151,7 +151,19 @@ class TestExtendLock:
 
         assert result is True
         mock_extend_script.assert_called_once_with(
-            keys=[LOCK_KEY], args=[":task-123:", 1200]
+            keys=[LOCK_KEY], args=[":task-123:", 1200, 7200]
+        )
+
+    def test_extend_lock_custom_max_ttl(self):
+        """Extend passes custom max_ttl to Lua script."""
+        lock, mock_redis, _, mock_extend_script = _make_lock()
+        mock_extend_script.return_value = 3600
+
+        result = lock.extend_lock("task-123", additional_seconds=300, max_ttl=3600)
+
+        assert result is True
+        mock_extend_script.assert_called_once_with(
+            keys=[LOCK_KEY], args=[":task-123:", 300, 3600]
         )
 
     def test_extend_lock_wrong_owner(self):

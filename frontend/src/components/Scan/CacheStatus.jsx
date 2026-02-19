@@ -216,7 +216,9 @@ export default function CacheStatus() {
     queryFn: getCacheHealth,
     refetchInterval: (query) => {
       const status = query.state.data?.status;
-      return status === 'updating' ? 5000 : 60000;
+      if (status === 'updating' || status === 'stuck') return 5000;
+      if (status === 'stale' || status === 'partial') return 15000;
+      return 60000;
     },
     staleTime: 3000,
     retry: 2
@@ -224,13 +226,14 @@ export default function CacheStatus() {
 
   // Detect when refresh completes and show notification
   useEffect(() => {
-    if (prevStatusRef.current === 'updating' && health?.status === 'fresh') {
-      setNotification({
-        open: true,
-        message: 'Cache refresh completed successfully',
-        severity: 'success'
-      });
-      // Refresh the stats too
+    const wasActive = ['updating', 'stuck'].includes(prevStatusRef.current);
+    const isTerminal = ['fresh', 'partial', 'stale'].includes(health?.status);
+    if (wasActive && isTerminal) {
+      const severity = health?.status === 'fresh' ? 'success' : 'warning';
+      const message = health?.status === 'fresh'
+        ? 'Cache refresh completed successfully'
+        : `Cache refresh finished (${health?.status})`;
+      setNotification({ open: true, message, severity });
       queryClient.invalidateQueries(['cacheStats']);
     }
     prevStatusRef.current = health?.status;
@@ -274,9 +277,15 @@ export default function CacheStatus() {
           message: data.message || 'Cache refresh started',
           severity: 'success'
         });
+        // Optimistic UI: immediately show "updating" before next poll
+        queryClient.setQueryData(['cacheHealth'], (old) => ({
+          ...old,
+          status: 'updating',
+          message: 'Cache refresh starting...',
+          can_refresh: false,
+        }));
       }
       setMenuAnchorEl(null);
-      // Immediately invalidate to show "updating" state
       queryClient.invalidateQueries(['cacheHealth']);
     },
     onError: (error) => {

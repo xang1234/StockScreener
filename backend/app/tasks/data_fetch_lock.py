@@ -27,12 +27,14 @@ return 0
 """
 
 # Lua script for atomic extend: only extends TTL if the task_id field matches.
+# Caps TTL at max_ttl (ARGV[3]) to prevent unbounded growth during long tasks.
 _EXTEND_LUA = """
 local val = redis.call('get', KEYS[1])
 if val and string.find(val, ARGV[1], 1, true) then
     local ttl = redis.call('ttl', KEYS[1])
     if ttl > 0 then
-        local new_ttl = ttl + tonumber(ARGV[2])
+        local max_ttl = tonumber(ARGV[3]) or 7200
+        local new_ttl = math.min(ttl + tonumber(ARGV[2]), max_ttl)
         redis.call('expire', KEYS[1], new_ttl)
         return new_ttl
     end
@@ -215,26 +217,28 @@ class DataFetchLock:
         """Check if lock is currently held."""
         return self.redis.exists(LOCK_KEY) > 0
 
-    def extend_lock(self, task_id: str, additional_seconds: int = 3600) -> bool:
+    def extend_lock(self, task_id: str, additional_seconds: int = 300, max_ttl: int = 7200) -> bool:
         """
-        Atomically extend the lock timeout if we own it.
+        Atomically extend the lock timeout if we own it, capped at max_ttl.
 
         Uses a Lua script to check ownership and extend TTL in one
-        atomic operation.
+        atomic operation. The cap prevents unbounded TTL growth during
+        long-running tasks with many batches.
 
         Args:
             task_id: Celery task ID that should own the lock
-            additional_seconds: Seconds to add to current TTL
+            additional_seconds: Seconds to add to current TTL (default 5 min)
+            max_ttl: Maximum allowed TTL in seconds (default 2 hours)
 
         Returns:
             True if lock was extended, False if we didn't own it
         """
         match_pattern = f":{task_id}:"
         new_ttl = self._extend_script(
-            keys=[LOCK_KEY], args=[match_pattern, additional_seconds]
+            keys=[LOCK_KEY], args=[match_pattern, additional_seconds, max_ttl]
         )
         if new_ttl > 0:
-            logger.info(f"Data fetch lock extended by {additional_seconds}s (new TTL: {new_ttl}s)")
+            logger.info(f"Data fetch lock extended by {additional_seconds}s (new TTL: {new_ttl}s, cap: {max_ttl}s)")
             return True
         return False
 

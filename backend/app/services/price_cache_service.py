@@ -752,27 +752,115 @@ class PriceCacheService:
             current_holder = lock.get_current_holder()
 
             if current_holder and current_holder.get('task_name'):
-                # Task is running - check if it's stuck
-                minutes_since_heartbeat = self._get_minutes_since_heartbeat()
+                # Lock is held — check heartbeat to determine state
+                hb_info = self._get_heartbeat_info()
 
-                if minutes_since_heartbeat is not None and minutes_since_heartbeat > 30:
-                    return {
-                        "status": "stuck",
-                        "message": f"Task appears stuck (no progress for {int(minutes_since_heartbeat)} min)",
-                        "can_refresh": True,  # Allow force cancel
-                        "can_force_cancel": True,
-                        "spy_last_date": None,
-                        "expected_date": None,
-                        "task_running": {
-                            "task_id": current_holder.get('task_id'),
-                            "task_name": current_holder.get('task_name'),
-                            "started_at": current_holder.get('started_at'),
-                            "minutes_since_heartbeat": int(minutes_since_heartbeat)
-                        },
-                        "last_warmup": self._get_warmup_metadata()
-                    }
-                elif minutes_since_heartbeat is None:
-                    # Heartbeat expired (1h TTL) but lock still held — task likely dead
+                if hb_info and hb_info.get('status') in ('completed', 'failed'):
+                    # Task finished but lock not yet released (brief race window).
+                    # Force-release stale lock and fall through to SPY freshness check.
+                    logger.info(
+                        f"Task heartbeat is terminal ({hb_info['status']}), "
+                        f"force-releasing stale lock"
+                    )
+                    lock.force_release()
+                    # Fall through to SPY freshness check below
+
+                elif hb_info and hb_info.get('status') == 'running':
+                    minutes = hb_info.get('minutes')
+                    if minutes is not None and minutes > 30:
+                        # Running heartbeat but no progress for >30 min → stuck
+                        return {
+                            "status": "stuck",
+                            "message": f"Task appears stuck (no progress for {int(minutes)} min)",
+                            "can_refresh": True,
+                            "can_force_cancel": True,
+                            "spy_last_date": None,
+                            "expected_date": None,
+                            "task_running": {
+                                "task_id": current_holder.get('task_id'),
+                                "task_name": current_holder.get('task_name'),
+                                "started_at": current_holder.get('started_at'),
+                                "minutes_since_heartbeat": int(minutes)
+                            },
+                            "last_warmup": self._get_warmup_metadata()
+                        }
+                    else:
+                        # Task is actively running with recent heartbeat
+                        return {
+                            "status": "updating",
+                            "message": f"Cache refresh in progress ({current_holder.get('task_name')})",
+                            "can_refresh": False,
+                            "spy_last_date": None,
+                            "expected_date": None,
+                            "task_running": {
+                                "task_id": current_holder.get('task_id'),
+                                "task_name": current_holder.get('task_name'),
+                                "started_at": current_holder.get('started_at'),
+                                **self._get_task_progress()
+                            },
+                            "last_warmup": self._get_warmup_metadata()
+                        }
+
+                else:
+                    # No heartbeat at all — use lock-age grace period
+                    started_at_str = current_holder.get('started_at')
+                    lock_age_minutes = None
+                    if started_at_str:
+                        try:
+                            started_at = datetime.fromisoformat(started_at_str)
+                            lock_age_minutes = (datetime.now() - started_at).total_seconds() / 60
+                        except (ValueError, TypeError):
+                            pass
+
+                    if lock_age_minutes is not None and lock_age_minutes < 2:
+                        # Lock acquired < 2 min ago, task is initializing
+                        return {
+                            "status": "updating",
+                            "message": f"Cache refresh starting ({current_holder.get('task_name')})",
+                            "can_refresh": False,
+                            "spy_last_date": None,
+                            "expected_date": None,
+                            "task_running": {
+                                "task_id": current_holder.get('task_id'),
+                                "task_name": current_holder.get('task_name'),
+                                "started_at": started_at_str,
+                            },
+                            "last_warmup": self._get_warmup_metadata()
+                        }
+
+                    # Lock held >= 2 min with no heartbeat.
+                    # Check if warmup metadata shows completion after lock was acquired.
+                    warmup_meta = self._get_warmup_metadata()
+                    if warmup_meta and warmup_meta.get('completed_at') and started_at_str:
+                        try:
+                            completed_at = datetime.fromisoformat(warmup_meta['completed_at'])
+                            started_at = datetime.fromisoformat(started_at_str)
+                            if completed_at > started_at:
+                                # Task completed but lock is stale — release and fall through
+                                logger.info("Warmup completed after lock acquired, releasing stale lock")
+                                lock.force_release()
+                                # Fall through to SPY freshness check below
+                            else:
+                                # Old completion, task truly stuck
+                                return {
+                                    "status": "stuck",
+                                    "message": "Task unresponsive (no heartbeat)",
+                                    "can_refresh": True,
+                                    "can_force_cancel": True,
+                                    "spy_last_date": None,
+                                    "expected_date": None,
+                                    "task_running": {
+                                        "task_id": current_holder.get('task_id'),
+                                        "task_name": current_holder.get('task_name'),
+                                        "started_at": started_at_str,
+                                        "minutes_since_heartbeat": None
+                                    },
+                                    "last_warmup": warmup_meta
+                                }
+                        except (ValueError, TypeError):
+                            pass
+
+                    # Default: truly stuck
                     return {
                         "status": "stuck",
                         "message": "Task unresponsive (no heartbeat)",
@@ -783,29 +871,13 @@ class PriceCacheService:
                         "task_running": {
                             "task_id": current_holder.get('task_id'),
                             "task_name": current_holder.get('task_name'),
-                            "started_at": current_holder.get('started_at'),
+                            "started_at": started_at_str,
                             "minutes_since_heartbeat": None
                         },
                         "last_warmup": self._get_warmup_metadata()
                     }
 
-                # Task is actively running
-                return {
-                    "status": "updating",
-                    "message": f"Cache refresh in progress ({current_holder.get('task_name')})",
-                    "can_refresh": False,
-                    "spy_last_date": None,
-                    "expected_date": None,
-                    "task_running": {
-                        "task_id": current_holder.get('task_id'),
-                        "task_name": current_holder.get('task_name'),
-                        "started_at": current_holder.get('started_at'),
-                        **self._get_task_progress()
-                    },
-                    "last_warmup": self._get_warmup_metadata()
-                }
-
-            # No task running - check SPY freshness first (authoritative signal)
+            # No task running (or stale lock was released above) — check SPY freshness
             spy_last_date = self._get_spy_last_date()
             expected_date = self._get_expected_data_date()
             warmup_meta = self._get_warmup_metadata()
@@ -1008,6 +1080,7 @@ class PriceCacheService:
 
         try:
             heartbeat = {
+                "status": "running",
                 "current": current,
                 "total": total,
                 "percent": percent or round((current / total) * 100, 1) if total > 0 else 0,
@@ -1021,12 +1094,13 @@ class PriceCacheService:
         except Exception as e:
             logger.error(f"Error updating warmup heartbeat: {e}")
 
-    def _get_minutes_since_heartbeat(self) -> Optional[float]:
+    def _get_heartbeat_info(self) -> Optional[Dict]:
         """
-        Get minutes since last heartbeat update.
+        Get heartbeat info including status and age.
 
         Returns:
-            Minutes since last heartbeat, or None if no heartbeat found
+            Dict with 'minutes' (float), 'status' (str), and raw heartbeat data,
+            or None if no heartbeat found.
         """
         if not self._redis_client:
             return None
@@ -1037,12 +1111,38 @@ class PriceCacheService:
                 return None
 
             heartbeat = json.loads(heartbeat_json)
-            updated_at = datetime.fromisoformat(heartbeat.get('updated_at', ''))
-            minutes = (datetime.now() - updated_at).total_seconds() / 60
-            return minutes
+            hb_status = heartbeat.get('status', 'running')
+
+            # For terminal states, use completed_at; for running, use updated_at
+            ts_field = 'completed_at' if hb_status in ('completed', 'failed') else 'updated_at'
+            ts_str = heartbeat.get(ts_field, heartbeat.get('updated_at', ''))
+            if ts_str:
+                ts = datetime.fromisoformat(ts_str)
+                minutes = (datetime.now() - ts).total_seconds() / 60
+            else:
+                minutes = None
+
+            return {
+                "minutes": minutes,
+                "status": hb_status,
+                **heartbeat
+            }
         except Exception as e:
-            logger.error(f"Error getting heartbeat: {e}")
+            logger.error(f"Error getting heartbeat info: {e}")
             return None
+
+    def _get_minutes_since_heartbeat(self) -> Optional[float]:
+        """
+        Get minutes since last heartbeat update.
+        Backward-compatible wrapper around _get_heartbeat_info().
+
+        Returns:
+            Minutes since last heartbeat, or None if no heartbeat found
+        """
+        info = self._get_heartbeat_info()
+        if info is None:
+            return None
+        return info.get("minutes")
 
     def _get_task_progress(self) -> Dict:
         """
@@ -1070,7 +1170,7 @@ class PriceCacheService:
             return {}
 
     def clear_warmup_heartbeat(self) -> None:
-        """Clear the warmup heartbeat (called after task completes)."""
+        """Clear the warmup heartbeat. Kept for backward compatibility."""
         if not self._redis_client:
             return
 
@@ -1078,6 +1178,32 @@ class PriceCacheService:
             self._redis_client.delete(WARMUP_HEARTBEAT_KEY)
         except Exception as e:
             logger.error(f"Error clearing warmup heartbeat: {e}")
+
+    def complete_warmup_heartbeat(self, status: str = "completed") -> None:
+        """
+        Write terminal heartbeat state instead of deleting.
+
+        This prevents the race condition where the health endpoint polls
+        between heartbeat deletion and lock release, falsely inferring "stuck".
+
+        Args:
+            status: Terminal status - "completed" or "failed"
+        """
+        if not self._redis_client:
+            return
+
+        try:
+            heartbeat = {
+                "status": status,
+                "completed_at": datetime.now().isoformat(),
+            }
+            self._redis_client.setex(
+                WARMUP_HEARTBEAT_KEY,
+                3600,  # 1 hour TTL (same as running heartbeats)
+                json.dumps(heartbeat)
+            )
+        except Exception as e:
+            logger.error(f"Error completing warmup heartbeat: {e}")
 
     def clear_fetch_metadata(self, symbol: str) -> None:
         """
@@ -1729,3 +1855,39 @@ class PriceCacheService:
             db.close()
 
         return stats
+
+    # --- Symbol failure tracking for auto-deactivation of delisted symbols ---
+
+    SYMBOL_FAILURE_KEY = "cache:symbol_failures:{symbol}"
+    SYMBOL_FAILURE_THRESHOLD = 3
+    SYMBOL_FAILURE_TTL = 86400 * 30  # 30 days
+
+    def record_symbol_failure(self, symbol: str) -> int:
+        """
+        Increment persistent failure counter for a symbol.
+
+        Returns the new failure count. When count >= SYMBOL_FAILURE_THRESHOLD,
+        the caller should deactivate the symbol in stock_universe.
+        """
+        if not self._redis_client:
+            return 0
+
+        try:
+            key = self.SYMBOL_FAILURE_KEY.format(symbol=symbol)
+            count = self._redis_client.incr(key)
+            self._redis_client.expire(key, self.SYMBOL_FAILURE_TTL)
+            return count
+        except Exception as e:
+            logger.error(f"Error recording failure for {symbol}: {e}")
+            return 0
+
+    def clear_symbol_failure(self, symbol: str) -> None:
+        """Clear failure counter on successful fetch."""
+        if not self._redis_client:
+            return
+
+        try:
+            key = self.SYMBOL_FAILURE_KEY.format(symbol=symbol)
+            self._redis_client.delete(key)
+        except Exception as e:
+            logger.error(f"Error clearing failure for {symbol}: {e}")

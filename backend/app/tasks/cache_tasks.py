@@ -268,6 +268,9 @@ def weekly_full_refresh(self):
 
         total = len(symbols)
 
+        # Write initial heartbeat before batch loop
+        price_cache.update_warmup_heartbeat(0, total, 0.0)
+
         # 4. Batch fetch all symbols (inline, no child task)
         logger.info(f"\n[4/4] Fetching {total} symbols...")
         from .data_fetch_lock import DataFetchLock
@@ -282,6 +285,9 @@ def weekly_full_refresh(self):
 
             logger.info(f"Batch {batch_num}/{total_batches}: Fetching {len(batch_symbols)} symbols")
 
+            batch_successes = []
+            batch_failures = []
+
             try:
                 batch_results = _fetch_with_backoff(bulk_fetcher, batch_symbols, period="2y")
                 batch_to_store = {}
@@ -291,12 +297,15 @@ def weekly_full_refresh(self):
                         if not price_df.empty:
                             batch_to_store[symbol] = price_df
                             refreshed += 1
+                            batch_successes.append(symbol)
                         else:
                             failed += 1
                             failed_symbols.append(symbol)
+                            batch_failures.append(symbol)
                     else:
                         failed += 1
                         failed_symbols.append(symbol)
+                        batch_failures.append(symbol)
                 # Batch store in Redis (pipeline) + DB (single transaction)
                 if batch_to_store:
                     price_cache.store_batch_in_cache(batch_to_store, also_store_db=True)
@@ -304,6 +313,10 @@ def weekly_full_refresh(self):
                 logger.error(f"Batch {batch_num} error: {e}")
                 failed += len(batch_symbols)
                 failed_symbols.extend(batch_symbols)
+                batch_failures.extend(batch_symbols)
+
+            # Track symbol failures for auto-deactivation
+            _track_symbol_failures(price_cache, batch_successes, batch_failures, db)
 
             # Update progress
             progress = min((batch_start + batch_size), total)
@@ -314,8 +327,8 @@ def weekly_full_refresh(self):
             })
             price_cache.update_warmup_heartbeat(progress, total, percent)
 
-            # Extend lock TTL to prevent expiry during long runs (A5)
-            lock.extend_lock(task_id, 3600)
+            # Extend lock TTL to prevent expiry during long runs (capped at 2h)
+            lock.extend_lock(task_id, 300)
 
             # Rate limit between batches
             if batch_start + batch_size < total:
@@ -326,7 +339,7 @@ def weekly_full_refresh(self):
         success_rate = refreshed / total if total > 0 else 0
         status = "completed" if success_rate >= 0.95 else "partial"
         price_cache.save_warmup_metadata(status, refreshed, total)
-        price_cache.clear_warmup_heartbeat()
+        price_cache.complete_warmup_heartbeat("completed")
 
         logger.info("=" * 80)
         logger.info(f"✓ Weekly full refresh completed:")
@@ -351,7 +364,7 @@ def weekly_full_refresh(self):
         logger.error(f"Error in weekly_full_refresh task: {e}", exc_info=True)
         price_cache = PriceCacheService.get_instance()
         price_cache.save_warmup_metadata("failed", refreshed, locals().get('total', 0), str(e))
-        price_cache.clear_warmup_heartbeat()
+        price_cache.complete_warmup_heartbeat("failed")
         return {
             'error': str(e),
             'completed_at': datetime.now().isoformat()
@@ -702,6 +715,73 @@ def _fetch_with_backoff(bulk_fetcher, symbols: List[str], period: str = "2y", ma
     return {}
 
 
+def _track_symbol_failures(price_cache, successes: List[str], failures: List[str], db=None):
+    """
+    Track per-symbol fetch failures and auto-deactivate persistently failing symbols.
+
+    Symbols that fail 3+ consecutive refreshes (typically delisted tickers) are
+    marked is_active=False in stock_universe to stop wasting API calls.
+
+    Args:
+        price_cache: PriceCacheService instance
+        successes: Symbols that fetched successfully this batch
+        failures: Symbols that failed this batch
+        db: Optional SQLAlchemy session (if None, opens a new one)
+    """
+    if not successes and not failures:
+        return
+
+    # Clear failure counters for successful symbols
+    for symbol in successes:
+        price_cache.clear_symbol_failure(symbol)
+
+    if not failures:
+        return
+
+    # Record failures and check for deactivation threshold
+    deactivated = []
+    for symbol in failures:
+        count = price_cache.record_symbol_failure(symbol)
+        if count >= price_cache.SYMBOL_FAILURE_THRESHOLD:
+            deactivated.append(symbol)
+
+    if not deactivated:
+        return
+
+    # Auto-deactivate symbols that hit the threshold
+    owns_db = db is None
+    if owns_db:
+        db = SessionLocal()
+
+    try:
+        from ..models.stock_universe import StockUniverse
+
+        for symbol in deactivated:
+            record = db.query(StockUniverse).filter(
+                StockUniverse.symbol == symbol,
+                StockUniverse.is_active == True
+            ).first()
+            if record:
+                record.is_active = False
+                logger.warning(
+                    f"Auto-deactivated {symbol}: failed {price_cache.SYMBOL_FAILURE_THRESHOLD}+ "
+                    f"consecutive refreshes (likely delisted)"
+                )
+
+        db.commit()
+
+        if deactivated:
+            logger.info(f"Auto-deactivated {len(deactivated)} persistently failing symbols: {deactivated}")
+
+    except Exception as e:
+        logger.error(f"Error auto-deactivating symbols: {e}", exc_info=True)
+        db.rollback()
+
+    finally:
+        if owns_db:
+            db.close()
+
+
 def _force_refresh_stale_intraday_impl(task, symbols: Optional[List[str]] = None) -> dict:
     """
     Core implementation of stale intraday data refresh.
@@ -1034,6 +1114,10 @@ def smart_refresh_cache(self, mode: str = "auto"):
 
         total = len(symbols)
 
+        # Write initial heartbeat before batch loop to prevent false "stuck" detection.
+        # Without this, the health endpoint sees lock held + no heartbeat = stuck.
+        price_cache.update_warmup_heartbeat(0, total, 0.0)
+
         # Step 3: Batch fetch with progress tracking
         logger.info(f"[3/3] Fetching {total} symbols...")
 
@@ -1045,6 +1129,9 @@ def smart_refresh_cache(self, mode: str = "auto"):
             total_batches = (total + batch_size - 1) // batch_size
 
             logger.info(f"Batch {batch_num}/{total_batches}: Fetching {len(batch_symbols)} symbols")
+
+            batch_successes = []
+            batch_failures = []
 
             try:
                 # Batch fetch using yf.download() (single HTTP request per batch)
@@ -1058,12 +1145,15 @@ def smart_refresh_cache(self, mode: str = "auto"):
                         if not price_df.empty:
                             batch_to_store[symbol] = price_df
                             refreshed += 1
+                            batch_successes.append(symbol)
                         else:
                             failed += 1
                             failed_symbols.append(symbol)
+                            batch_failures.append(symbol)
                     else:
                         failed += 1
                         failed_symbols.append(symbol)
+                        batch_failures.append(symbol)
 
                 # Batch store in Redis (pipeline) + DB (single transaction)
                 if batch_to_store:
@@ -1073,6 +1163,10 @@ def smart_refresh_cache(self, mode: str = "auto"):
                 logger.error(f"Batch {batch_num} error: {e}")
                 failed += len(batch_symbols)
                 failed_symbols.extend(batch_symbols)
+                batch_failures.extend(batch_symbols)
+
+            # Track symbol failures for auto-deactivation of delisted symbols
+            _track_symbol_failures(price_cache, batch_successes, batch_failures, db)
 
             # Update progress for UI and stuck detection
             progress = min((batch_start + batch_size), total)
@@ -1093,11 +1187,11 @@ def smart_refresh_cache(self, mode: str = "auto"):
             # Update heartbeat for stuck detection
             price_cache.update_warmup_heartbeat(progress, total, percent)
 
-            # Extend lock TTL to prevent expiry during long-running tasks (A5)
+            # Extend lock TTL to prevent expiry during long-running tasks
             task_id = self.request.id or 'unknown'
             from .data_fetch_lock import DataFetchLock
             lock = DataFetchLock.get_instance()
-            lock.extend_lock(task_id, 3600)
+            lock.extend_lock(task_id, 300)
 
             # Rate limit between batches (Redis-backed distributed limiter)
             if batch_start + batch_size < total:
@@ -1108,7 +1202,7 @@ def smart_refresh_cache(self, mode: str = "auto"):
         success_rate = refreshed / total if total > 0 else 0
         status = "completed" if success_rate >= 0.95 else "partial"
         price_cache.save_warmup_metadata(status, refreshed, total)
-        price_cache.clear_warmup_heartbeat()
+        price_cache.complete_warmup_heartbeat("completed")
 
         logger.info("=" * 80)
         logger.info(f"✓ Smart refresh completed ({mode} mode):")
@@ -1133,7 +1227,7 @@ def smart_refresh_cache(self, mode: str = "auto"):
         logger.error(f"Error in smart_refresh_cache task: {e}", exc_info=True)
         # Save partial progress
         price_cache.save_warmup_metadata("failed", refreshed, locals().get('total', 0), str(e))
-        price_cache.clear_warmup_heartbeat()
+        price_cache.complete_warmup_heartbeat("failed")
         return {
             "status": "failed",
             "error": str(e),
