@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     alphavantage_rate_limit: int = 25  # requests per day
     finviz_rate_limit_interval: float = 0.5  # seconds between finviz API calls
     yfinance_batch_rate_limit_interval: float = 5.0  # seconds between yfinance batch downloads
+    yfinance_per_ticker_delay: float = 0.2  # seconds between ticker.history() calls within a batch
 
     # Scanning
     default_universe: str = "all"
@@ -107,8 +108,8 @@ class Settings(BaseSettings):
     fundamental_cache_enabled: bool = True  # Enable fundamental data caching
     fundamental_cache_ttl_days: int = 7  # Refresh weekly (7 days)
     fundamental_refresh_enabled: bool = True  # Enable weekly scheduled refresh
-    fundamental_refresh_day: int = 5  # Friday = 5
-    fundamental_refresh_hour: int = 18  # 6 PM ET (after market close at 4 PM)
+    fundamental_refresh_day: int = 6  # Saturday = 6 (avoids collision with Friday 5:30PM cache warmup)
+    fundamental_refresh_hour: int = 8  # 8 AM ET (IP has recovered overnight from Friday warmup)
 
     # Theme Discovery Configuration
     theme_discovery_enabled: bool = True  # Enable theme discovery pipeline

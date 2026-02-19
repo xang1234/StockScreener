@@ -501,12 +501,22 @@ def prewarm_all_active_symbols(self):
         db.close()
 
 
+def _is_rate_limit_error(error_str: str) -> bool:
+    """Check if an error string indicates a rate limit."""
+    lower = error_str.lower()
+    return any(indicator in lower for indicator in ("rate", "429", "too many", "limit", "throttl"))
+
+
 def _fetch_with_backoff(bulk_fetcher, symbols: List[str], period: str = "2y", max_retries: int = 3):
     """
     Fetch batch data with exponential backoff on rate limit errors.
 
-    yfinance can return 429 errors or rate limit blocks. This function
-    retries with exponential backoff (60s, 120s, 240s) before giving up.
+    yfinance can return 429 errors or rate limit blocks in two ways:
+    1. Raising an exception (caught in the except block)
+    2. Returning per-symbol errors with has_error=True (the common case)
+
+    This function detects both and retries with exponential backoff
+    (60s, 120s, 240s) before giving up.
 
     Args:
         bulk_fetcher: BulkDataFetcher instance
@@ -522,19 +532,43 @@ def _fetch_with_backoff(bulk_fetcher, symbols: List[str], period: str = "2y", ma
 
     for attempt in range(max_retries):
         try:
-            return bulk_fetcher.fetch_batch_data(
+            results = bulk_fetcher.fetch_batch_data(
                 symbols,
                 period=period,
-                include_fundamentals=False  # Price data only for speed
+                include_fundamentals=False,  # Price data only for speed
+                delay_per_ticker=settings.yfinance_per_ticker_delay,
             )
+
+            # Check for per-symbol rate limit errors that fetch_batch_data
+            # swallows (returns as has_error=True instead of raising)
+            if results:
+                rate_limit_failures = sum(
+                    1 for data in results.values()
+                    if data.get('has_error') and _is_rate_limit_error(data.get('error', ''))
+                )
+                total = len(results)
+                failure_rate = rate_limit_failures / total if total > 0 else 0
+
+                if failure_rate > 0.5 and attempt < max_retries - 1:
+                    wait_time = base_delay * (2 ** attempt)  # 60, 120, 240 seconds
+                    logger.warning(
+                        f"Rate limited: {rate_limit_failures}/{total} symbols hit rate limits. "
+                        f"Waiting {wait_time}s before retry "
+                        f"(attempt {attempt + 1}/{max_retries})"
+                    )
+                    time.sleep(wait_time)
+                    continue  # Retry the whole batch
+
+            return results
+
         except Exception as e:
             error_str = str(e).lower()
-            # Check for rate limit indicators
-            if "rate" in error_str or "429" in error_str or "too many" in error_str or "limit" in error_str:
+            # Check for rate limit indicators in the exception
+            if _is_rate_limit_error(error_str):
                 if attempt < max_retries - 1:
                     wait_time = base_delay * (2 ** attempt)  # 60, 120, 240 seconds
                     logger.warning(
-                        f"Rate limited by yfinance. Waiting {wait_time}s before retry "
+                        f"Rate limited by yfinance (exception). Waiting {wait_time}s before retry "
                         f"(attempt {attempt + 1}/{max_retries})"
                     )
                     time.sleep(wait_time)

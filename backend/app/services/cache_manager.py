@@ -137,6 +137,7 @@ class CacheManager:
 
         # Process in batches using bulk fetcher
         total_batches = (len(symbols_to_fetch) + batch_size - 1) // batch_size
+        consecutive_backoffs = 0  # Track consecutive rate-limited batches
 
         for batch_num in range(total_batches):
             start_idx = batch_num * batch_size
@@ -150,10 +151,12 @@ class CacheManager:
                 bulk_data = bulk_fetcher.fetch_batch_data(
                     batch,
                     period=period,
-                    include_fundamentals=False  # Only warming price cache
+                    include_fundamentals=False,  # Only warming price cache
+                    delay_per_ticker=settings.yfinance_per_ticker_delay,
                 )
 
                 # Store each symbol's data in cache
+                batch_failed = 0
                 for symbol, data in bulk_data.items():
                     if not data.get('has_error') and data.get('price_data') is not None:
                         # Store in cache
@@ -162,6 +165,7 @@ class CacheManager:
                         logger.debug(f"✓ {symbol}: Cached {len(data['price_data'])} rows")
                     else:
                         stats['failed'] += 1
+                        batch_failed += 1
                         error_msg = data.get('error', 'No data')
                         stats['errors'].append(f"{symbol}: {error_msg}")
                         logger.debug(f"✗ {symbol}: {error_msg}")
@@ -172,10 +176,22 @@ class CacheManager:
                     f"{stats['successful']}/{len(symbols_to_fetch)} successful so far"
                 )
 
-                # Rate limiting between batches (Redis-backed distributed limiter)
-                if rate_limit > 0 and batch_num < total_batches - 1:
-                    from .rate_limiter import rate_limiter
-                    rate_limiter.wait("yfinance:batch", min_interval_s=rate_limit)
+                # Batch-level backoff: if >50% of batch failed, likely rate-limited
+                batch_failure_rate = batch_failed / len(batch) if batch else 0
+                if batch_failure_rate > 0.5:
+                    consecutive_backoffs += 1
+                    backoff_time = min(60 * (2 ** (consecutive_backoffs - 1)), 480)  # 60, 120, 240, 480 max
+                    logger.warning(
+                        f"High failure rate ({batch_failed}/{len(batch)}) in batch {batch_num + 1}. "
+                        f"Backing off {backoff_time}s before next batch."
+                    )
+                    time.sleep(backoff_time)
+                else:
+                    consecutive_backoffs = 0  # Reset on successful batch
+                    # Normal rate limiting between batches (Redis-backed distributed limiter)
+                    if rate_limit > 0 and batch_num < total_batches - 1:
+                        from .rate_limiter import rate_limiter
+                        rate_limiter.wait("yfinance:batch", min_interval_s=rate_limit)
 
             except Exception as e:
                 logger.error(f"Error warming batch {batch_num + 1}: {e}", exc_info=True)
@@ -218,7 +234,7 @@ class CacheManager:
         # 2. Warm price cache for all symbols
         price_stats = self.warm_price_cache(
             symbols,
-            rate_limit=settings.scan_rate_limit,
+            rate_limit=settings.yfinance_batch_rate_limit_interval,
             force_refresh=force_refresh
         )
 

@@ -29,7 +29,8 @@ class BulkDataFetcher:
         self,
         symbols: List[str],
         period: str = '2y',
-        include_fundamentals: bool = True
+        include_fundamentals: bool = True,
+        delay_per_ticker: float = 0.0
     ) -> Dict[str, Dict]:
         """
         Fetch data for multiple symbols in a single efficient operation.
@@ -38,6 +39,9 @@ class BulkDataFetcher:
             symbols: List of ticker symbols to fetch
             period: Time period for historical data (default: 2y)
             include_fundamentals: Whether to include fundamental data
+            delay_per_ticker: Seconds to wait between individual ticker.history()
+                calls within the batch (default: 0.0, use settings.yfinance_per_ticker_delay
+                for rate-limited contexts)
 
         Returns:
             Dict mapping symbols to their data:
@@ -63,7 +67,7 @@ class BulkDataFetcher:
             tickers = yf.Tickers(' '.join(symbols))
 
             results = {}
-            for symbol in symbols:
+            for i, symbol in enumerate(symbols):
                 try:
                     ticker = tickers.tickers[symbol]
 
@@ -102,6 +106,10 @@ class BulkDataFetcher:
                         'has_error': True,
                         'error': str(e)
                     }
+
+                # Per-symbol rate limiting within the batch
+                if delay_per_ticker > 0 and i < len(symbols) - 1:
+                    time.sleep(delay_per_ticker)
 
             logger.info(
                 f"Bulk fetch completed: {len([r for r in results.values() if not r['has_error']])} "
@@ -451,6 +459,7 @@ class BulkDataFetcher:
 
         all_results = {}
         total_batches = (len(symbols) + batch_size - 1) // batch_size
+        consecutive_backoffs = 0  # Track consecutive rate-limited batches
 
         for batch_num in range(total_batches):
             start_idx = batch_num * batch_size
@@ -458,6 +467,8 @@ class BulkDataFetcher:
             batch_symbols = symbols[start_idx:end_idx]
 
             logger.info(f"Processing batch {batch_num + 1}/{total_batches} ({len(batch_symbols)} symbols)")
+
+            batch_rate_limit_failures = 0
 
             try:
                 # Use yf.Tickers for efficient batch fetching
@@ -483,8 +494,11 @@ class BulkDataFetcher:
                         all_results[symbol] = fundamentals
 
                     except Exception as e:
+                        error_str = str(e).lower()
                         logger.warning(f"Error fetching fundamentals for {symbol}: {e}")
                         all_results[symbol] = {'has_error': True, 'error': str(e)}
+                        if any(ind in error_str for ind in ("rate", "429", "too many", "limit", "throttl")):
+                            batch_rate_limit_failures += 1
 
                     # Rate limit between individual ticker fetches within batch
                     if i < len(batch_symbols) - 1 and delay_per_ticker > 0:
@@ -496,10 +510,22 @@ class BulkDataFetcher:
                 for symbol in batch_symbols:
                     all_results[symbol] = {'has_error': True, 'error': str(e)}
 
-            # Rate limit between batches
-            if batch_num < total_batches - 1:
-                from .rate_limiter import rate_limiter
-                rate_limiter.wait("yfinance:batch", min_interval_s=delay_between_batches)
+            # Batch-level backoff: if >50% of batch hit rate limits, back off
+            batch_failure_rate = batch_rate_limit_failures / len(batch_symbols) if batch_symbols else 0
+            if batch_failure_rate > 0.5:
+                consecutive_backoffs += 1
+                backoff_time = min(60 * (2 ** (consecutive_backoffs - 1)), 480)  # 60, 120, 240, 480 max
+                logger.warning(
+                    f"Rate limited: {batch_rate_limit_failures}/{len(batch_symbols)} symbols in batch {batch_num + 1}. "
+                    f"Backing off {backoff_time}s before next batch."
+                )
+                time.sleep(backoff_time)
+            else:
+                consecutive_backoffs = 0  # Reset on successful batch
+                # Normal rate limit between batches
+                if batch_num < total_batches - 1:
+                    from .rate_limiter import rate_limiter
+                    rate_limiter.wait("yfinance:batch", min_interval_s=delay_between_batches)
 
         success_count = len([r for r in all_results.values() if not r.get('has_error', False)])
         logger.info(f"Batch fundamentals complete: {success_count}/{len(symbols)} successful")

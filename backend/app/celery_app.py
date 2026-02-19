@@ -113,6 +113,7 @@ celery_app.conf.task_routes = {
     'app.tasks.cache_tasks.warm_top_symbols': {'queue': 'data_fetch'},
     'app.tasks.cache_tasks.force_refresh_stale_intraday': {'queue': 'data_fetch'},
     'app.tasks.cache_tasks.auto_refresh_after_close': {'queue': 'data_fetch'},
+    'app.tasks.cache_tasks.smart_refresh_cache': {'queue': 'data_fetch'},
     # Breadth tasks (yfinance on cache miss)
     'app.tasks.breadth_tasks.calculate_daily_breadth': {'queue': 'data_fetch'},
     'app.tasks.breadth_tasks.calculate_daily_breadth_with_gapfill': {'queue': 'data_fetch'},
@@ -144,18 +145,20 @@ celery_app.conf.result_expires = 86400  # Results expire after 24 hours
 # All data-fetching tasks route to 'data_fetch' queue for serialization
 if settings.cache_warmup_enabled:
     celery_app.conf.beat_schedule = {
-        # Daily cache warmup after market close (includes SPY + all active symbols)
-        'daily-cache-warmup': {
-            'task': 'app.tasks.cache_tasks.daily_cache_warmup',
+        # Daily smart cache refresh after market close
+        # Uses smart_refresh_cache which has correct rate limiting,
+        # exponential backoff on 429s, market-cap-prioritized ordering,
+        # and heartbeat monitoring for stuck detection.
+        'daily-smart-refresh': {
+            'task': 'app.tasks.cache_tasks.smart_refresh_cache',
             'schedule': crontab(
                 hour=settings.cache_warm_hour,
                 minute=settings.cache_warm_minute,
                 day_of_week='1-5'  # Monday-Friday only
             ),
-            'options': {'queue': 'data_fetch'}
+            'options': {'queue': 'data_fetch'},
+            'kwargs': {'mode': 'full'},
         },
-
-        # NOTE: nightly-prewarm-all-symbols removed - redundant with daily_cache_warmup
 
         # Weekly full refresh (Sunday morning)
         'weekly-full-refresh': {
@@ -180,13 +183,13 @@ if settings.cache_warmup_enabled:
             'options': {'queue': 'data_fetch'}
         },
 
-        # Weekly fundamental refresh (Friday evening after market close)
+        # Weekly fundamental refresh (Saturday morning - avoids Friday warmup collision)
         'weekly-fundamental-refresh': {
             'task': 'app.tasks.fundamentals_tasks.refresh_all_fundamentals',
             'schedule': crontab(
-                hour=settings.fundamental_refresh_hour,  # 6 PM ET (18:00)
+                hour=settings.fundamental_refresh_hour,  # 8 AM ET
                 minute=0,
-                day_of_week=settings.fundamental_refresh_day  # Friday = 5
+                day_of_week=settings.fundamental_refresh_day  # Saturday = 6
             ),
             'options': {'queue': 'data_fetch'}
         },
