@@ -1,4 +1,7 @@
-"""Detector interfaces and shared detector-level data structures."""
+"""Detector interfaces and shared detector-level data structures.
+
+TODO(SE-B5): Finalize graceful-failure semantics and detector status taxonomy.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +10,18 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from app.analysis.patterns.config import SetupEngineParameters
-from app.analysis.patterns.models import PatternCandidate
+from app.analysis.patterns.models import PatternCandidate, PatternCandidateModel
 
 
 @dataclass(frozen=True)
 class PatternDetectorInput:
-    """Detector input payload independent from scanner infrastructure."""
+    """Detector input payload independent from scanner infrastructure.
+
+    Data orientation:
+    - Price/feature sequences are oldest -> newest.
+    - Detector implementations must treat missing feature keys as unavailable,
+      not as implicit pass/fail signals.
+    """
 
     symbol: str
     timeframe: str
@@ -23,10 +32,15 @@ class PatternDetectorInput:
 
 @dataclass(frozen=True)
 class PatternDetectorResult:
-    """Detector output with candidate and diagnostics."""
+    """Detector output with candidate and diagnostics.
+
+    Deterministic fallback:
+    - No-data/unimplemented path returns ``candidate=None`` and explicit checks.
+    - Detector exceptions should be converted upstream into diagnostics.
+    """
 
     detector_name: str
-    candidate: PatternCandidate | None
+    candidate: PatternCandidate | PatternCandidateModel | None
     passed_checks: tuple[str, ...] = ()
     failed_checks: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()

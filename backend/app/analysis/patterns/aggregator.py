@@ -1,4 +1,8 @@
-"""Pattern aggregation entrypoint for Setup Engine analysis layer."""
+"""Pattern aggregation entrypoint for Setup Engine analysis layer.
+
+TODO(SE-C7): Add cross-detector confidence calibration and tie-breaking policy.
+TODO(SE-B7): Emit typed SetupEngineReport-compatible aggregation output.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +19,7 @@ from app.analysis.patterns.detectors import (
     PatternDetectorInput,
     default_pattern_detectors,
 )
-from app.analysis.patterns.models import PatternCandidate
+from app.analysis.patterns.models import PatternCandidate, coerce_pattern_candidate
 from app.analysis.patterns.policy import (
     SetupEngineDataPolicyResult,
     policy_failed_checks,
@@ -78,7 +82,18 @@ class SetupEngineAggregator:
             passed_checks.extend(result.passed_checks)
             failed_checks.extend(result.failed_checks)
             if result.candidate is not None:
-                candidates.append(result.candidate)
+                try:
+                    candidates.append(
+                        coerce_pattern_candidate(
+                            result.candidate,
+                            default_timeframe=detector_input.timeframe,
+                        )
+                    )
+                except ValueError as exc:
+                    failed_checks.append(f"{detector.name}:candidate_invalid")
+                    diagnostics.append(
+                        f"{detector.name}:candidate_invalid:{exc}"
+                    )
 
         primary = _pick_primary_candidate(candidates)
 
@@ -115,7 +130,9 @@ def _pick_primary_candidate(candidates: Sequence[PatternCandidate]) -> PatternCa
         return None
 
     def _confidence(candidate: PatternCandidate) -> float:
-        raw = candidate.get("confidence_pct")
+        raw = candidate.get("confidence")
+        if raw is None and candidate.get("confidence_pct") is not None:
+            raw = float(candidate["confidence_pct"]) / 100.0
         if raw is None:
             return float("-inf")
         return float(raw)

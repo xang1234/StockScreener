@@ -1,9 +1,10 @@
-"""Double-bottom detector stub.
+"""NR7/Inside-Day trigger detector entrypoint.
 
 Expected input orientation:
-- Weekly or daily features in chronological order (oldest -> newest).
+- Daily bars in chronological order.
+- Trigger bars are evaluated on completed bars only.
 
-TODO(SE-C7): Calibrate and normalize double-bottom confidence against other families.
+TODO(SE-C5): Implement NR7, inside-day, and combined trigger subtype logic.
 """
 
 from __future__ import annotations
@@ -16,10 +17,10 @@ from app.analysis.patterns.detectors.base import (
 )
 
 
-class DoubleBottomDetector(PatternDetector):
-    """Placeholder detector implementation with deterministic fallback."""
+class NR7InsideDayDetector(PatternDetector):
+    """Compile-safe entrypoint for trigger-family detection."""
 
-    name = "double_bottom"
+    name = "nr7_inside_day"
 
     def detect(
         self,
@@ -27,17 +28,17 @@ class DoubleBottomDetector(PatternDetector):
         parameters: SetupEngineParameters,
     ) -> PatternDetectorResult:
         del parameters
-        if detector_input.weekly_bars < 10 and detector_input.daily_bars < 80:
+        if detector_input.daily_bars < 10:
             return PatternDetectorResult(
                 detector_name=self.name,
                 candidate=None,
-                failed_checks=("insufficient_data",),
-                warnings=("double_bottom_insufficient_data",),
+                failed_checks=("insufficient_data", "daily_bars_lt_10"),
+                warnings=("nr7_inside_day_insufficient_data",),
             )
 
         return PatternDetectorResult(
             detector_name=self.name,
             candidate=None,
             failed_checks=("detector_not_implemented",),
-            warnings=("double_bottom_detector_stub",),
+            warnings=("nr7_inside_day_stub",),
         )

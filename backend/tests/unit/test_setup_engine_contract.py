@@ -3,6 +3,7 @@
 import pytest
 
 from app.analysis.patterns.models import (
+    PatternCandidateModel,
     SETUP_ENGINE_FIELD_SPECS,
     SETUP_ENGINE_NUMERIC_UNITS,
     SETUP_ENGINE_REQUIRED_KEYS,
@@ -134,3 +135,34 @@ def test_policy_insufficient_nulls_primary_fields():
     assert payload["candidates"] == []
     assert payload["setup_ready"] is False
     assert "insufficient_data" in payload["explain"]["failed_checks"]
+
+
+def test_candidate_confidence_ratio_is_normalized_to_pct():
+    payload = build_setup_engine_payload(
+        candidates=[
+            {
+                "pattern": "vcp",
+                "timeframe": "daily",
+                "confidence": 0.81,
+            }
+        ]
+    )
+    candidate = payload["candidates"][0]
+    assert candidate["confidence"] == pytest.approx(0.81)
+    assert candidate["confidence_pct"] == pytest.approx(81.0)
+
+
+def test_candidate_model_input_is_supported():
+    candidate_model = PatternCandidateModel(
+        pattern="three_weeks_tight",
+        timeframe="weekly",
+        confidence=0.63,
+        metrics={"weeks_tight": 3},
+        checks={"tight_band_ok": True},
+        notes=("strict_mode",),
+    )
+    payload = build_setup_engine_payload(candidates=[candidate_model])
+    candidate = payload["candidates"][0]
+    assert candidate["pattern"] == "three_weeks_tight"
+    assert candidate["checks"]["tight_band_ok"] is True
+    assert candidate["notes"] == ["strict_mode"]

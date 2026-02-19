@@ -1,9 +1,10 @@
-"""Double-bottom detector stub.
+"""VCP detector entrypoint wrapper.
 
 Expected input orientation:
-- Weekly or daily features in chronological order (oldest -> newest).
+- Chronological features (oldest -> newest).
+- No look-ahead assumptions.
 
-TODO(SE-C7): Calibrate and normalize double-bottom confidence against other families.
+TODO(SE-C1): Wrap existing criteria/vcp_detection implementation without logic fork.
 """
 
 from __future__ import annotations
@@ -16,10 +17,10 @@ from app.analysis.patterns.detectors.base import (
 )
 
 
-class DoubleBottomDetector(PatternDetector):
-    """Placeholder detector implementation with deterministic fallback."""
+class VCPWrapperDetector(PatternDetector):
+    """Compile-safe entrypoint for VCP integration."""
 
-    name = "double_bottom"
+    name = "vcp"
 
     def detect(
         self,
@@ -27,17 +28,17 @@ class DoubleBottomDetector(PatternDetector):
         parameters: SetupEngineParameters,
     ) -> PatternDetectorResult:
         del parameters
-        if detector_input.weekly_bars < 10 and detector_input.daily_bars < 80:
+        if detector_input.daily_bars < 120:
             return PatternDetectorResult(
                 detector_name=self.name,
                 candidate=None,
-                failed_checks=("insufficient_data",),
-                warnings=("double_bottom_insufficient_data",),
+                failed_checks=("insufficient_data", "daily_bars_lt_120"),
+                warnings=("vcp_wrapper_insufficient_data",),
             )
 
         return PatternDetectorResult(
             detector_name=self.name,
             candidate=None,
             failed_checks=("detector_not_implemented",),
-            warnings=("double_bottom_detector_stub",),
+            warnings=("vcp_wrapper_stub",),
         )

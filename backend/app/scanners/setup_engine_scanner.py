@@ -19,6 +19,8 @@ from app.analysis.patterns.models import (
     SETUP_ENGINE_ALLOWED_TIMEFRAMES,
     SETUP_ENGINE_DEFAULT_SCHEMA_VERSION,
     PatternCandidate,
+    PatternCandidateModel,
+    coerce_pattern_candidate,
     SetupEngineExplain,
     SetupEnginePayload,
     assert_valid_setup_engine_payload,
@@ -61,7 +63,7 @@ def _normalize_key_levels(values: Mapping[str, Any] | None) -> dict[str, float |
 
 
 def _normalize_candidates(
-    candidates: Sequence[Mapping[str, Any]] | None,
+    candidates: Sequence[Mapping[str, Any] | PatternCandidateModel] | None,
     *,
     default_timeframe: str,
 ) -> list[PatternCandidate]:
@@ -70,30 +72,15 @@ def _normalize_candidates(
 
     normalized: list[PatternCandidate] = []
     for candidate in candidates:
-        for key in candidate.keys():
-            if not is_snake_case(str(key)):
-                raise ValueError(f"Candidate key must be snake_case: {key}")
-
-        timeframe = cast(str | None, candidate.get("timeframe")) or default_timeframe
-        if timeframe not in SETUP_ENGINE_ALLOWED_TIMEFRAMES:
-            raise ValueError(
-                f"Candidate timeframe must be one of {sorted(SETUP_ENGINE_ALLOWED_TIMEFRAMES)}"
-            )
+        if isinstance(candidate, Mapping):
+            for key in candidate.keys():
+                if not is_snake_case(str(key)):
+                    raise ValueError(f"Candidate key must be snake_case: {key}")
 
         normalized.append(
-            PatternCandidate(
-                pattern=cast(str, candidate.get("pattern") or "unknown"),
-                confidence_pct=_to_float(candidate.get("confidence_pct")),
-                pivot_price=_to_float(candidate.get("pivot_price")),
-                pivot_type=cast(str | None, candidate.get("pivot_type")),
-                pivot_date=normalize_iso_date(
-                    cast(str | date | datetime | None, candidate.get("pivot_date"))
-                ),
-                distance_to_pivot_pct=_to_float(candidate.get("distance_to_pivot_pct")),
-                setup_score=_to_float(candidate.get("setup_score")),
-                quality_score=_to_float(candidate.get("quality_score")),
-                readiness_score=_to_float(candidate.get("readiness_score")),
-                timeframe=cast(Any, timeframe),
+            coerce_pattern_candidate(
+                candidate,
+                default_timeframe=default_timeframe,
             )
         )
 
@@ -116,7 +103,7 @@ def build_setup_engine_payload(
     bb_width_pctile_252: int | float | None = None,
     volume_vs_50d: int | float | None = None,
     rs_line_new_high: bool = False,
-    candidates: Sequence[Mapping[str, Any]] | None = None,
+    candidates: Sequence[Mapping[str, Any] | PatternCandidateModel] | None = None,
     passed_checks: Sequence[Any] | None = None,
     failed_checks: Sequence[Any] | None = None,
     key_levels: Mapping[str, Any] | None = None,

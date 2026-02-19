@@ -1,9 +1,11 @@
-"""Double-bottom detector stub.
+"""First-pullback / trend-resumption detector entrypoint.
 
 Expected input orientation:
-- Weekly or daily features in chronological order (oldest -> newest).
+- Chronological bars with MA features.
+- Distinct touch counting must avoid clustered double-counts.
 
-TODO(SE-C7): Calibrate and normalize double-bottom confidence against other families.
+TODO(SE-C6a): Implement MA-touch/test counting and orderliness metrics.
+TODO(SE-C6b): Implement trigger and pivot-choice logic.
 """
 
 from __future__ import annotations
@@ -16,10 +18,10 @@ from app.analysis.patterns.detectors.base import (
 )
 
 
-class DoubleBottomDetector(PatternDetector):
-    """Placeholder detector implementation with deterministic fallback."""
+class FirstPullbackDetector(PatternDetector):
+    """Compile-safe entrypoint for first-pullback detection."""
 
-    name = "double_bottom"
+    name = "first_pullback"
 
     def detect(
         self,
@@ -27,17 +29,17 @@ class DoubleBottomDetector(PatternDetector):
         parameters: SetupEngineParameters,
     ) -> PatternDetectorResult:
         del parameters
-        if detector_input.weekly_bars < 10 and detector_input.daily_bars < 80:
+        if detector_input.daily_bars < 60:
             return PatternDetectorResult(
                 detector_name=self.name,
                 candidate=None,
-                failed_checks=("insufficient_data",),
-                warnings=("double_bottom_insufficient_data",),
+                failed_checks=("insufficient_data", "daily_bars_lt_60"),
+                warnings=("first_pullback_insufficient_data",),
             )
 
         return PatternDetectorResult(
             detector_name=self.name,
             candidate=None,
             failed_checks=("detector_not_implemented",),
-            warnings=("double_bottom_detector_stub",),
+            warnings=("first_pullback_stub",),
         )

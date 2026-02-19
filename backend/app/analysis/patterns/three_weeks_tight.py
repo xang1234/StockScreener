@@ -1,9 +1,10 @@
-"""Double-bottom detector stub.
+"""Three-Weeks-Tight / Multi-Weeks-Tight detector entrypoint.
 
 Expected input orientation:
-- Weekly or daily features in chronological order (oldest -> newest).
+- Weekly bars derived from chronological daily bars.
+- Current incomplete week excluded unless policy explicitly permits.
 
-TODO(SE-C7): Calibrate and normalize double-bottom confidence against other families.
+TODO(SE-C2): Implement strict/relaxed tightness scoring and pivot extraction.
 """
 
 from __future__ import annotations
@@ -16,10 +17,10 @@ from app.analysis.patterns.detectors.base import (
 )
 
 
-class DoubleBottomDetector(PatternDetector):
-    """Placeholder detector implementation with deterministic fallback."""
+class ThreeWeeksTightDetector(PatternDetector):
+    """Compile-safe entrypoint for 3WT/MWT detection."""
 
-    name = "double_bottom"
+    name = "three_weeks_tight"
 
     def detect(
         self,
@@ -27,17 +28,17 @@ class DoubleBottomDetector(PatternDetector):
         parameters: SetupEngineParameters,
     ) -> PatternDetectorResult:
         del parameters
-        if detector_input.weekly_bars < 10 and detector_input.daily_bars < 80:
+        if detector_input.weekly_bars < 8:
             return PatternDetectorResult(
                 detector_name=self.name,
                 candidate=None,
-                failed_checks=("insufficient_data",),
-                warnings=("double_bottom_insufficient_data",),
+                failed_checks=("insufficient_data", "weekly_bars_lt_8"),
+                warnings=("three_weeks_tight_insufficient_data",),
             )
 
         return PatternDetectorResult(
             detector_name=self.name,
             candidate=None,
             failed_checks=("detector_not_implemented",),
-            warnings=("double_bottom_detector_stub",),
+            warnings=("three_weeks_tight_stub",),
         )

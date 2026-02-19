@@ -6,7 +6,7 @@ field names, types, units, nullability, and naming policy.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 import re
 from typing import Any, Literal, Mapping, Sequence, TypedDict, cast
@@ -16,23 +16,45 @@ SETUP_ENGINE_DEFAULT_SCHEMA_VERSION = "v1"
 SETUP_ENGINE_ALLOWED_TIMEFRAMES = frozenset({"daily", "weekly"})
 SETUP_ENGINE_NUMERIC_UNITS = frozenset({"pct", "ratio", "days", "weeks", "price"})
 
+PATTERN_SCORE_MIN = 0.0
+PATTERN_SCORE_MAX = 100.0
+PATTERN_CONFIDENCE_MIN = 0.0
+PATTERN_CONFIDENCE_MAX = 1.0
+
 _SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+JsonScalar = str | int | float | bool | None
+
+
 class PatternCandidate(TypedDict, total=False):
-    """Candidate setup emitted by pattern detectors."""
+    """Canonical candidate shape emitted by all detectors.
+
+    Conventions:
+    - ``setup_score``/``quality_score``/``readiness_score`` are 0..100.
+    - ``confidence`` is 0..1; ``confidence_pct`` is the derived 0..100 alias.
+    """
 
     pattern: str
-    confidence_pct: float | None
+    timeframe: Literal["daily", "weekly"]
+    source_detector: str | None
+
     pivot_price: float | None
     pivot_type: str | None
     pivot_date: str | None
+
     distance_to_pivot_pct: float | None
     setup_score: float | None
     quality_score: float | None
     readiness_score: float | None
-    timeframe: Literal["daily", "weekly"]
+
+    confidence: float | None
+    confidence_pct: float | None
+
+    metrics: dict[str, JsonScalar]
+    checks: dict[str, bool]
+    notes: list[str]
 
 
 class SetupEngineExplain(TypedDict):
@@ -69,6 +91,112 @@ class SetupEnginePayload(TypedDict):
 
     candidates: list[PatternCandidate]
     explain: SetupEngineExplain
+
+
+@dataclass(frozen=True)
+class PatternCandidateModel:
+    """Typed model for detector outputs before payload serialization."""
+
+    pattern: str
+    timeframe: Literal["daily", "weekly"]
+    source_detector: str | None = None
+
+    pivot_price: float | None = None
+    pivot_type: str | None = None
+    pivot_date: str | None = None
+
+    distance_to_pivot_pct: float | None = None
+    setup_score: float | None = None
+    quality_score: float | None = None
+    readiness_score: float | None = None
+
+    confidence: float | None = None
+
+    metrics: dict[str, JsonScalar] = field(default_factory=dict)
+    checks: dict[str, bool] = field(default_factory=dict)
+    notes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.pattern:
+            raise ValueError("pattern is required")
+        if self.timeframe not in SETUP_ENGINE_ALLOWED_TIMEFRAMES:
+            raise ValueError("timeframe must be daily or weekly")
+
+        for key in self.metrics.keys():
+            if not is_snake_case(key):
+                raise ValueError(f"metrics key must be snake_case: {key}")
+        for key, value in self.checks.items():
+            if not is_snake_case(key):
+                raise ValueError(f"checks key must be snake_case: {key}")
+            if not isinstance(value, bool):
+                raise ValueError(f"checks[{key}] must be bool")
+
+        _validate_score("setup_score", self.setup_score)
+        _validate_score("quality_score", self.quality_score)
+        _validate_score("readiness_score", self.readiness_score)
+        _validate_confidence(self.confidence)
+
+        if self.pivot_date is not None:
+            normalize_iso_date(self.pivot_date)
+
+    @property
+    def confidence_pct(self) -> float | None:
+        if self.confidence is None:
+            return None
+        return self.confidence * 100.0
+
+    def to_payload(self) -> PatternCandidate:
+        """Serialize to the canonical payload candidate shape."""
+        return PatternCandidate(
+            pattern=self.pattern,
+            timeframe=self.timeframe,
+            source_detector=self.source_detector,
+            pivot_price=self.pivot_price,
+            pivot_type=self.pivot_type,
+            pivot_date=self.pivot_date,
+            distance_to_pivot_pct=self.distance_to_pivot_pct,
+            setup_score=self.setup_score,
+            quality_score=self.quality_score,
+            readiness_score=self.readiness_score,
+            confidence=self.confidence,
+            confidence_pct=self.confidence_pct,
+            metrics=dict(self.metrics),
+            checks=dict(self.checks),
+            notes=list(self.notes),
+        )
+
+    @classmethod
+    def from_mapping(
+        cls,
+        raw: Mapping[str, Any],
+        *,
+        default_timeframe: str = "daily",
+    ) -> PatternCandidateModel:
+        """Create a validated model from a mapping with legacy aliases."""
+        timeframe = cast(str | None, raw.get("timeframe")) or default_timeframe
+
+        confidence_raw = raw.get("confidence")
+        if confidence_raw is None and raw.get("confidence_pct") is not None:
+            confidence_raw = float(raw["confidence_pct"]) / 100.0
+
+        return cls(
+            pattern=cast(str, raw.get("pattern") or "unknown"),
+            timeframe=cast(Any, timeframe),
+            source_detector=cast(str | None, raw.get("source_detector")),
+            pivot_price=_as_float(raw.get("pivot_price")),
+            pivot_type=cast(str | None, raw.get("pivot_type")),
+            pivot_date=normalize_iso_date(
+                cast(str | date | datetime | None, raw.get("pivot_date"))
+            ),
+            distance_to_pivot_pct=_as_float(raw.get("distance_to_pivot_pct")),
+            setup_score=_as_float(raw.get("setup_score")),
+            quality_score=_as_float(raw.get("quality_score")),
+            readiness_score=_as_float(raw.get("readiness_score")),
+            confidence=_as_float(confidence_raw),
+            metrics=_normalize_metrics(raw.get("metrics")),
+            checks=_normalize_checks(raw.get("checks")),
+            notes=tuple(_normalize_notes(raw.get("notes"))),
+        )
 
 
 @dataclass(frozen=True)
@@ -303,9 +431,7 @@ def normalize_iso_date(value: str | date | datetime | None) -> str | None:
         raise ValueError(f"Date value must be str/date/datetime, got {type(value)!r}")
 
     if not _ISO_DATE_RE.fullmatch(value):
-        raise ValueError(
-            "Date value must use YYYY-MM-DD format"
-        )
+        raise ValueError("Date value must use YYYY-MM-DD format")
 
     # Verifies calendar validity (e.g. 2026-02-30 is invalid).
     date.fromisoformat(value)
@@ -314,6 +440,108 @@ def normalize_iso_date(value: str | date | datetime | None) -> str | None:
 
 def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("Boolean values are not valid numeric fields")
+    if isinstance(value, (int, float)):
+        return float(value)
+    raise ValueError(f"Expected numeric value, got {type(value)!r}")
+
+
+def _validate_score(name: str, value: float | None) -> None:
+    if value is None:
+        return
+    if value < PATTERN_SCORE_MIN or value > PATTERN_SCORE_MAX:
+        raise ValueError(
+            f"{name} must be in [{PATTERN_SCORE_MIN}, {PATTERN_SCORE_MAX}]"
+        )
+
+
+def _validate_confidence(value: float | None) -> None:
+    if value is None:
+        return
+    if value < PATTERN_CONFIDENCE_MIN or value > PATTERN_CONFIDENCE_MAX:
+        raise ValueError(
+            f"confidence must be in [{PATTERN_CONFIDENCE_MIN}, {PATTERN_CONFIDENCE_MAX}]"
+        )
+
+
+def _normalize_metrics(raw: Any) -> dict[str, JsonScalar]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("metrics must be an object")
+
+    metrics: dict[str, JsonScalar] = {}
+    for key, value in raw.items():
+        key_s = str(key)
+        if not is_snake_case(key_s):
+            raise ValueError(f"metrics key must be snake_case: {key_s}")
+        if not (
+            value is None
+            or isinstance(value, (str, int, float, bool))
+        ):
+            raise ValueError(f"metrics[{key_s}] must be JSON scalar")
+        metrics[key_s] = cast(JsonScalar, value)
+    return metrics
+
+
+def _normalize_checks(raw: Any) -> dict[str, bool]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("checks must be an object")
+
+    checks: dict[str, bool] = {}
+    for key, value in raw.items():
+        key_s = str(key)
+        if not is_snake_case(key_s):
+            raise ValueError(f"checks key must be snake_case: {key_s}")
+        if not isinstance(value, bool):
+            raise ValueError(f"checks[{key_s}] must be bool")
+        checks[key_s] = value
+    return checks
+
+
+def _normalize_notes(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise ValueError("notes must be a list")
+    return [str(item) for item in raw if item is not None and str(item) != ""]
+
+
+def validate_pattern_candidate(candidate: Mapping[str, Any]) -> list[str]:
+    """Return validation errors for one candidate mapping."""
+    errors: list[str] = []
+
+    try:
+        PatternCandidateModel.from_mapping(candidate)
+    except ValueError as exc:
+        errors.append(str(exc))
+
+    return errors
+
+
+def coerce_pattern_candidate(
+    candidate: Mapping[str, Any] | PatternCandidateModel,
+    *,
+    default_timeframe: str = "daily",
+) -> PatternCandidate:
+    """Normalize candidate to canonical payload shape."""
+    if isinstance(candidate, PatternCandidateModel):
+        model = candidate
+    else:
+        model = PatternCandidateModel.from_mapping(
+            candidate,
+            default_timeframe=default_timeframe,
+        )
+
+    return model.to_payload()
 
 
 def validate_setup_engine_payload(payload: Mapping[str, Any]) -> list[str]:
@@ -330,9 +558,7 @@ def validate_setup_engine_payload(payload: Mapping[str, Any]) -> list[str]:
 
     timeframe = payload.get("timeframe")
     if timeframe not in SETUP_ENGINE_ALLOWED_TIMEFRAMES:
-        errors.append(
-            "timeframe must be one of: daily, weekly"
-        )
+        errors.append("timeframe must be one of: daily, weekly")
 
     pivot_date = payload.get("pivot_date")
     try:
@@ -377,20 +603,10 @@ def validate_setup_engine_payload(payload: Mapping[str, Any]) -> list[str]:
                         f"candidates[{index}] key is not snake_case: {key}"
                     )
 
-            candidate_date = candidate.get("pivot_date")
-            try:
-                normalize_iso_date(cast(str | date | datetime | None, candidate_date))
-            except ValueError as exc:
-                errors.append(f"candidates[{index}].pivot_date invalid: {exc}")
-
-            candidate_timeframe = candidate.get("timeframe")
-            if (
-                candidate_timeframe is not None
-                and candidate_timeframe not in SETUP_ENGINE_ALLOWED_TIMEFRAMES
-            ):
-                errors.append(
-                    f"candidates[{index}].timeframe must be daily or weekly"
-                )
+            candidate_errors = validate_pattern_candidate(candidate)
+            errors.extend(
+                [f"candidates[{index}] {msg}" for msg in candidate_errors]
+            )
 
     return errors
 
