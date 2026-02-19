@@ -37,16 +37,10 @@ class NR7InsideDayDetector(PatternDetector):
             fallback_bar_count=detector_input.daily_bars,
         )
         if not normalized.prerequisites_ok:
-            return PatternDetectorResult(
-                detector_name=self.name,
-                candidate=None,
-                failed_checks=("insufficient_data", *normalized.failed_checks),
-                warnings=("nr7_inside_day_insufficient_data", *normalized.warnings),
+            return PatternDetectorResult.insufficient_data(
+                self.name, normalized=normalized
             )
 
-        return PatternDetectorResult(
-            detector_name=self.name,
-            candidate=None,
-            failed_checks=("detector_not_implemented",),
-            warnings=("nr7_inside_day_stub", *normalized.warnings),
+        return PatternDetectorResult.not_implemented(
+            self.name, warnings=normalized.warnings
         )

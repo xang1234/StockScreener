@@ -430,6 +430,20 @@ export const getContentItems = async (params = {}) => {
   return response.data;
 };
 
+/**
+ * Export content items matching filters as CSV.
+ *
+ * @param {Object} params - Same filter params as getContentItems (without limit/offset)
+ * @returns {Promise<Blob>} CSV file blob
+ */
+export const exportContentItems = async (params = {}) => {
+  const response = await apiClient.get('/v1/themes/content/export', {
+    params,
+    responseType: 'blob',
+  });
+  return response.data;
+};
+
 // ==================== LLM Configuration ====================
 
 /**

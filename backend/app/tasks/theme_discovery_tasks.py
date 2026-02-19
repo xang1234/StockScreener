@@ -172,7 +172,7 @@ def extract_themes(limit: int = 50, pipeline: str = None):
 
 
 @celery_app.task(name='app.tasks.theme_discovery_tasks.reprocess_failed_themes')
-def reprocess_failed_themes(limit: int = 100, pipeline: str = None):
+def reprocess_failed_themes(limit: int = 500, pipeline: str = None):
     """
     Reprocess content items that previously failed LLM extraction.
 
@@ -625,7 +625,7 @@ def run_full_pipeline(self, run_id: str = None, pipeline: str = None):
         )
 
         logger.info("\n[Step 2/5] Reprocess Failed Items...")
-        results['reprocessing'] = reprocess_failed_themes(limit=100, pipeline=pipeline)
+        results['reprocessing'] = reprocess_failed_themes(limit=500, pipeline=pipeline)
 
         if pipeline_run:
             pipeline_run.current_step = 'reprocessing'
@@ -647,7 +647,7 @@ def run_full_pipeline(self, run_id: str = None, pipeline: str = None):
         )
 
         logger.info("\n[Step 3/5] Theme Extraction...")
-        results['extraction'] = extract_themes(limit=100, pipeline=pipeline)
+        results['extraction'] = extract_themes(limit=500, pipeline=pipeline)
 
         if pipeline_run:
             pipeline_run.current_step = 'extraction'

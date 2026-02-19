@@ -5,6 +5,7 @@ import {
   DialogTitle,
   DialogContent,
   Box,
+  Button,
   IconButton,
   TextField,
   InputAdornment,
@@ -27,10 +28,11 @@ import {
   Tooltip,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
+import DownloadIcon from '@mui/icons-material/Download';
 import SearchIcon from '@mui/icons-material/Search';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import ArticleIcon from '@mui/icons-material/Article';
-import { getContentItems } from '../../api/themes';
+import { getContentItems, exportContentItems } from '../../api/themes';
 
 const SOURCE_TYPE_OPTIONS = [
   { value: '', label: 'All Sources' },
@@ -72,6 +74,7 @@ function ArticleBrowserModal({ open, onClose }) {
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [orderBy, setOrderBy] = useState('published_at');
   const [order, setOrder] = useState('desc');
+  const [exporting, setExporting] = useState(false);
 
   // Debounce search
   useMemo(() => {
@@ -117,6 +120,34 @@ function ArticleBrowserModal({ open, onClose }) {
     setPage(0);
   };
 
+  const handleExport = async () => {
+    try {
+      setExporting(true);
+      const exportParams = {
+        search: debouncedSearch || undefined,
+        source_type: sourceType || undefined,
+        sentiment: sentiment || undefined,
+        sort_by: orderBy,
+        sort_order: order,
+      };
+      const blob = await exportContentItems(exportParams);
+
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `theme_articles_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Export failed:', error);
+      alert('Failed to export articles. Please try again.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const formatDate = (dateString) => {
     if (!dateString) return '-';
     const date = new Date(dateString);
@@ -147,6 +178,16 @@ function ArticleBrowserModal({ open, onClose }) {
                 sx={{ ml: 2 }}
               />
             )}
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={exporting ? <CircularProgress size={14} /> : <DownloadIcon />}
+              onClick={handleExport}
+              disabled={!data?.total || exporting}
+              sx={{ ml: 2 }}
+            >
+              {exporting ? 'Exporting...' : 'CSV'}
+            </Button>
           </Box>
           <IconButton onClick={onClose} size="small">
             <CloseIcon />

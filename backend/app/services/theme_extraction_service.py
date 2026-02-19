@@ -673,7 +673,7 @@ Example themes for this pipeline: {examples_str}
 
         return results
 
-    def reprocess_failed_items(self, limit: int = 100) -> dict:
+    def reprocess_failed_items(self, limit: int = 500) -> dict:
         """
         Reprocess content items that previously failed LLM extraction.
 

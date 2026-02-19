@@ -1,6 +1,7 @@
 """Pattern detector registry for Setup Engine analysis layer."""
 
 from app.analysis.patterns.detectors.base import (
+    DetectorOutcome,
     PatternDetector,
     PatternDetectorInput,
     PatternDetectorResult,
@@ -28,6 +29,7 @@ def default_pattern_detectors() -> tuple[PatternDetector, ...]:
 
 
 __all__ = [
+    "DetectorOutcome",
     "PatternDetector",
     "PatternDetectorInput",
     "PatternDetectorResult",

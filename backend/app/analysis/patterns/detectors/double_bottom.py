@@ -43,31 +43,31 @@ class DoubleBottomDetector(PatternDetector):
             fallback_bar_count=detector_input.daily_bars,
         )
 
-        if (not normalized_weekly.prerequisites_ok) and (not normalized_daily.prerequisites_ok):
-            failed = (
-                "insufficient_data",
-                *normalized_weekly.failed_checks,
-                *normalized_daily.failed_checks,
+        if (not normalized_weekly.prerequisites_ok) and (
+            not normalized_daily.prerequisites_ok
+        ):
+            # Merge checks/warnings from both timeframes.
+            failed = tuple(
+                dict.fromkeys(
+                    normalized_weekly.failed_checks
+                    + normalized_daily.failed_checks
+                )
             )
-            warnings = (
-                "double_bottom_insufficient_data",
-                *normalized_weekly.warnings,
-                *normalized_daily.warnings,
+            warns = tuple(
+                dict.fromkeys(
+                    normalized_weekly.warnings + normalized_daily.warnings
+                )
             )
-            return PatternDetectorResult(
-                detector_name=self.name,
-                candidate=None,
-                failed_checks=tuple(dict.fromkeys(failed)),
-                warnings=tuple(dict.fromkeys(warnings)),
+            return PatternDetectorResult.insufficient_data(
+                self.name, failed_checks=failed, warnings=warns
             )
 
-        return PatternDetectorResult(
-            detector_name=self.name,
-            candidate=None,
-            failed_checks=("detector_not_implemented",),
-            warnings=(
-                "double_bottom_detector_stub",
-                *normalized_weekly.warnings,
-                *normalized_daily.warnings,
-            ),
+        # Merge warnings from both timeframes for the stub path.
+        all_warnings = tuple(
+            dict.fromkeys(
+                normalized_weekly.warnings + normalized_daily.warnings
+            )
+        )
+        return PatternDetectorResult.not_implemented(
+            self.name, warnings=all_warnings
         )

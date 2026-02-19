@@ -37,16 +37,10 @@ class ThreeWeeksTightDetector(PatternDetector):
             fallback_bar_count=detector_input.weekly_bars,
         )
         if not normalized.prerequisites_ok:
-            return PatternDetectorResult(
-                detector_name=self.name,
-                candidate=None,
-                failed_checks=("insufficient_data", *normalized.failed_checks),
-                warnings=("three_weeks_tight_insufficient_data", *normalized.warnings),
+            return PatternDetectorResult.insufficient_data(
+                self.name, normalized=normalized
             )
 
-        return PatternDetectorResult(
-            detector_name=self.name,
-            candidate=None,
-            failed_checks=("detector_not_implemented",),
-            warnings=("three_weeks_tight_stub", *normalized.warnings),
+        return PatternDetectorResult.not_implemented(
+            self.name, warnings=normalized.warnings
         )

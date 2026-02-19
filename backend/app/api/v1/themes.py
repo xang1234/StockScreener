@@ -8,8 +8,11 @@ Provides access to:
 - Theme validation and correlation analysis
 - Alerts
 """
+import csv
+import io
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from datetime import datetime
 from typing import Optional
@@ -721,27 +724,26 @@ async def get_failed_items_count(
 
 # ==================== Content Item Browser (MUST be before /{theme_id}) ====================
 
-@router.get("/content", response_model=ContentItemsListResponse)
-async def list_content_items(
-    search: Optional[str] = Query(None, description="Search in title, source_name, tickers"),
-    source_type: Optional[str] = Query(None, description="Filter: substack, twitter, news, reddit"),
-    sentiment: Optional[str] = Query(None, description="Filter: bullish, bearish, neutral"),
-    date_from: Optional[str] = Query(None, description="From date (YYYY-MM-DD)"),
-    date_to: Optional[str] = Query(None, description="To date (YYYY-MM-DD)"),
-    limit: int = Query(50, ge=1, le=200, description="Items per page"),
-    offset: int = Query(0, ge=0, description="Pagination offset"),
-    sort_by: str = Query("published_at", description="Sort column"),
-    sort_order: str = Query("desc", description="asc or desc"),
-    db: Session = Depends(get_db)
-):
-    """
-    List all content items with their associated themes, sentiments, and tickers.
 
-    Aggregates data from ContentItem and ThemeMention tables to provide a unified
-    view of all ingested content with their extracted metadata.
+def _fetch_content_items_with_themes(
+    db: Session,
+    search: Optional[str] = None,
+    source_type: Optional[str] = None,
+    sentiment: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    sort_by: str = "published_at",
+    sort_order: str = "desc",
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
+) -> tuple[list[ContentItemWithThemesResponse], int]:
     """
-    from sqlalchemy import func, case, or_, desc, asc
-    from sqlalchemy.orm import aliased
+    Shared query logic for content items with theme/sentiment/ticker aggregation.
+
+    Returns (items, total_count) where items are ContentItemWithThemesResponse objects.
+    When limit/offset are None, returns all matching items (used by export).
+    """
+    from sqlalchemy import or_, desc, asc
     from datetime import datetime as dt
 
     # Base query - only processed items from active sources
@@ -755,7 +757,6 @@ async def list_content_items(
     # Apply search filter
     if search:
         search_term = f"%{search}%"
-        # Search in title, source_name
         base_query = base_query.filter(
             or_(
                 ContentItem.title.ilike(search_term),
@@ -778,7 +779,6 @@ async def list_content_items(
     if date_to:
         try:
             to_date = dt.strptime(date_to, "%Y-%m-%d")
-            # Add one day to include the entire end date
             from datetime import timedelta
             to_date = to_date + timedelta(days=1)
             base_query = base_query.filter(ContentItem.published_at < to_date)
@@ -795,11 +795,14 @@ async def list_content_items(
     else:
         base_query = base_query.order_by(desc(sort_column))
 
-    # Apply pagination
-    content_items = base_query.offset(offset).limit(limit).all()
+    # Apply pagination only if provided
+    if limit is not None and offset is not None:
+        content_items = base_query.offset(offset).limit(limit).all()
+    else:
+        content_items = base_query.all()
 
     if not content_items:
-        return ContentItemsListResponse(total=total, limit=limit, offset=offset, items=[])
+        return [], total
 
     # Get all content item IDs for batch fetching mentions
     content_ids = [item.id for item in content_items]
@@ -826,9 +829,8 @@ async def list_content_items(
                 filtered_content_ids.add(mention.content_item_id)
 
         if not filtered_content_ids:
-            return ContentItemsListResponse(total=0, limit=limit, offset=offset, items=[])
+            return [], 0
 
-        # Recount with sentiment filter
         content_items = [item for item in content_items if item.id in filtered_content_ids]
         total = len(filtered_content_ids)
 
@@ -843,9 +845,7 @@ async def list_content_items(
                         tickers_matched_ids.add(mention.content_item_id)
                         break
 
-        # If tickers were matched, include those content items too
         if tickers_matched_ids:
-            # Get these additional content items
             additional_items = db.query(ContentItem).filter(
                 ContentItem.id.in_(tickers_matched_ids),
                 ContentItem.is_processed == True
@@ -866,18 +866,15 @@ async def list_content_items(
                 "tickers": set()
             }
 
-        # Add theme if exists
         if mention.cluster_id and mention.cluster_name:
             theme_ref = {"id": mention.cluster_id, "name": mention.cluster_name}
             if theme_ref not in mentions_by_content[content_id]["themes"]:
                 mentions_by_content[content_id]["themes"].append(theme_ref)
 
-        # Add sentiment
         if mention.sentiment:
             if mention.sentiment not in mentions_by_content[content_id]["sentiments"]:
                 mentions_by_content[content_id]["sentiments"].append(mention.sentiment)
 
-        # Add tickers
         if mention.tickers:
             mentions_by_content[content_id]["tickers"].update(mention.tickers)
 
@@ -886,12 +883,11 @@ async def list_content_items(
     for content in content_items:
         mention_data = mentions_by_content.get(content.id, {"themes": [], "sentiments": [], "tickers": set()})
 
-        # Determine primary sentiment (most common)
-        sentiments = mention_data["sentiments"]
+        sentiments_list = mention_data["sentiments"]
         primary_sentiment = None
-        if sentiments:
+        if sentiments_list:
             sentiment_counts = {}
-            for s in sentiments:
+            for s in sentiments_list:
                 sentiment_counts[s] = sentiment_counts.get(s, 0) + 1
             primary_sentiment = max(sentiment_counts, key=sentiment_counts.get)
 
@@ -905,16 +901,105 @@ async def list_content_items(
             author=content.author,
             published_at=content.published_at,
             themes=[ThemeReference(**t) for t in mention_data["themes"]],
-            sentiments=sentiments,
+            sentiments=sentiments_list,
             primary_sentiment=primary_sentiment,
             tickers=sorted(list(mention_data["tickers"]))
         ))
+
+    return items, total
+
+
+@router.get("/content", response_model=ContentItemsListResponse)
+async def list_content_items(
+    search: Optional[str] = Query(None, description="Search in title, source_name, tickers"),
+    source_type: Optional[str] = Query(None, description="Filter: substack, twitter, news, reddit"),
+    sentiment: Optional[str] = Query(None, description="Filter: bullish, bearish, neutral"),
+    date_from: Optional[str] = Query(None, description="From date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="To date (YYYY-MM-DD)"),
+    limit: int = Query(50, ge=1, le=200, description="Items per page"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+    sort_by: str = Query("published_at", description="Sort column"),
+    sort_order: str = Query("desc", description="asc or desc"),
+    db: Session = Depends(get_db)
+):
+    """
+    List all content items with their associated themes, sentiments, and tickers.
+
+    Aggregates data from ContentItem and ThemeMention tables to provide a unified
+    view of all ingested content with their extracted metadata.
+    """
+    items, total = _fetch_content_items_with_themes(
+        db, search=search, source_type=source_type, sentiment=sentiment,
+        date_from=date_from, date_to=date_to, sort_by=sort_by,
+        sort_order=sort_order, limit=limit, offset=offset,
+    )
 
     return ContentItemsListResponse(
         total=total,
         limit=limit,
         offset=offset,
         items=items
+    )
+
+
+@router.get("/content/export")
+async def export_content_items(
+    search: Optional[str] = Query(None, description="Search in title, source_name, tickers"),
+    source_type: Optional[str] = Query(None, description="Filter: substack, twitter, news, reddit"),
+    sentiment: Optional[str] = Query(None, description="Filter: bullish, bearish, neutral"),
+    date_from: Optional[str] = Query(None, description="From date (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="To date (YYYY-MM-DD)"),
+    sort_by: str = Query("published_at", description="Sort column"),
+    sort_order: str = Query("desc", description="asc or desc"),
+    db: Session = Depends(get_db)
+):
+    """
+    Export all content items matching filters as a CSV file.
+
+    Returns all matching items (no pagination) with full article body text.
+    CSV includes: ID, Title, Content, URL, Themes, Sentiment, Tickers,
+    Published Date, Source Type, Source Name, Author.
+    """
+    items, total = _fetch_content_items_with_themes(
+        db, search=search, source_type=source_type, sentiment=sentiment,
+        date_from=date_from, date_to=date_to, sort_by=sort_by,
+        sort_order=sort_order,
+    )
+
+    # Build CSV in memory
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+
+    # Header row
+    writer.writerow([
+        "ID", "Title", "Content", "URL", "Themes", "Sentiment",
+        "Tickers", "Published Date", "Source Type", "Source Name", "Author",
+    ])
+
+    # Data rows
+    for item in items:
+        writer.writerow([
+            item.id,
+            item.title or "",
+            item.content or "",
+            item.url or "",
+            "; ".join(t.name for t in item.themes),
+            item.primary_sentiment or "",
+            "; ".join(item.tickers),
+            item.published_at.strftime("%Y-%m-%d %H:%M") if item.published_at else "",
+            item.source_type or "",
+            item.source_name or "",
+            item.author or "",
+        ])
+
+    # UTF-8 BOM for Excel compatibility
+    csv_bytes = b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8")
+    filename = f"theme_articles_{datetime.utcnow().strftime('%Y%m%d')}.csv"
+
+    return StreamingResponse(
+        io.BytesIO(csv_bytes),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

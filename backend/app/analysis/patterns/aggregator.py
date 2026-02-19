@@ -15,6 +15,7 @@ from app.analysis.patterns.config import (
     assert_valid_setup_engine_parameters,
 )
 from app.analysis.patterns.detectors import (
+    DetectorOutcome,
     PatternDetector,
     PatternDetectorInput,
     default_pattern_detectors,
@@ -70,30 +71,29 @@ class SetupEngineAggregator:
         key_levels: dict[str, float | None] = {}
 
         for detector in self._detectors:
-            try:
-                result = detector.detect(detector_input, parameters)
-            except Exception as exc:
-                # Degrade gracefully: detector failures become explicit diagnostics.
-                failed_checks.append(f"{detector.name}:detector_error")
-                diagnostics.append(f"{detector.name}:error:{exc.__class__.__name__}")
+            result = detector.detect_safe(detector_input, parameters)
+
+            if result.outcome == DetectorOutcome.ERROR:
+                failed_checks.append(
+                    f"{detector.name}:{DetectorOutcome.ERROR.value}"
+                )
+                if result.error_detail:
+                    diagnostics.append(
+                        f"{detector.name}:{result.error_detail}"
+                    )
                 continue
 
             diagnostics.extend(result.warnings)
             passed_checks.extend(result.passed_checks)
             failed_checks.extend(result.failed_checks)
-            if result.candidate is not None:
-                try:
-                    candidates.append(
-                        coerce_pattern_candidate(
-                            result.candidate,
-                            default_timeframe=detector_input.timeframe,
-                        )
+
+            for raw_candidate in result.candidates:
+                candidates.append(
+                    coerce_pattern_candidate(
+                        raw_candidate,
+                        default_timeframe=detector_input.timeframe,
                     )
-                except ValueError as exc:
-                    failed_checks.append(f"{detector.name}:candidate_invalid")
-                    diagnostics.append(
-                        f"{detector.name}:candidate_invalid:{exc}"
-                    )
+                )
 
         primary = _pick_primary_candidate(candidates)
 
