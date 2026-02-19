@@ -594,10 +594,11 @@ async def get_pipeline_status(
         'status': pipeline_run.status,
         'current_step': pipeline_run.current_step,
         'step_number': 0,
-        'total_steps': 4,
+        'total_steps': 5,
         'percent': 0.0,
         'message': None,
         'ingestion_result': None,
+        'reprocessing_result': None,
         'extraction_result': None,
         'metrics_result': None,
         'alerts_result': None,
@@ -610,7 +611,7 @@ async def get_pipeline_status(
     if pipeline_run.status in ['completed', 'failed']:
         if pipeline_run.status == 'completed':
             response['percent'] = 100.0
-            response['step_number'] = 4
+            response['step_number'] = 5
             response['current_step'] = 'completed'
         return response
 
@@ -625,13 +626,14 @@ async def get_pipeline_status(
             response['percent'] = info.get('percent', 0.0)
             response['message'] = info.get('message')
             response['ingestion_result'] = info.get('ingestion_result')
+            response['reprocessing_result'] = info.get('reprocessing_result')
             response['extraction_result'] = info.get('extraction_result')
             response['metrics_result'] = info.get('metrics_result')
             response['status'] = 'running'
         elif task_result.state == 'SUCCESS':
             response['status'] = 'completed'
             response['percent'] = 100.0
-            response['step_number'] = 4
+            response['step_number'] = 5
             response['current_step'] = 'completed'
             if task_result.result:
                 response['alerts_result'] = task_result.result.get('steps', {}).get('alerts')
@@ -664,6 +666,7 @@ async def list_pipeline_runs(
                 'status': r.status,
                 'current_step': r.current_step,
                 'items_ingested': r.items_ingested,
+                'items_reprocessed': r.items_reprocessed,
                 'themes_updated': r.themes_updated,
                 'started_at': r.started_at.isoformat() if r.started_at else None,
                 'completed_at': r.completed_at.isoformat() if r.completed_at else None,
@@ -671,6 +674,48 @@ async def list_pipeline_runs(
             for r in runs
         ]
     }
+
+
+@router.get("/pipeline/failed-count")
+async def get_failed_items_count(
+    pipeline: Optional[str] = Query(None, description="Filter by pipeline"),
+    db: Session = Depends(get_db),
+):
+    """
+    Count content items with extraction errors eligible for reprocessing.
+
+    Returns the number of items that will be retried on the next pipeline run.
+    """
+    from datetime import timedelta
+    from sqlalchemy import func
+
+    cutoff = datetime.utcnow() - timedelta(days=30)
+
+    query = db.query(func.count(ContentItem.id)).filter(
+        ContentItem.is_processed == True,
+        ContentItem.extraction_error != None,
+        ContentItem.published_at >= cutoff,
+    )
+
+    # Filter by pipeline sources if specified
+    if pipeline:
+        import json as json_lib
+        source_ids = []
+        sources = db.query(ContentSource).filter(ContentSource.is_active == True).all()
+        for source in sources:
+            source_pipelines = source.pipelines or ["technical", "fundamental"]
+            if isinstance(source_pipelines, str):
+                try:
+                    source_pipelines = json_lib.loads(source_pipelines)
+                except Exception:
+                    source_pipelines = ["technical", "fundamental"]
+            if pipeline in source_pipelines:
+                source_ids.append(source.id)
+        if source_ids:
+            query = query.filter(ContentItem.source_id.in_(source_ids))
+
+    count = query.scalar()
+    return {"failed_count": count, "max_age_days": 30}
 
 
 # ==================== Content Item Browser (MUST be before /{theme_id}) ====================

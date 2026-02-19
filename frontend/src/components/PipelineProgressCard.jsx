@@ -15,11 +15,11 @@ import { usePipeline } from '../contexts/PipelineContext';
 const PipelineProgressCard = () => {
   const { pipelineStatus, isCardVisible, isMinimized, closePipelineCard, toggleMinimize } = usePipeline();
 
-  const steps = ['Ingestion', 'Extraction', 'Metrics', 'Alerts'];
+  const steps = ['Ingestion', 'Retry', 'Extraction', 'Metrics', 'Alerts'];
 
   const getActiveStep = () => {
     if (!pipelineStatus) return 0;
-    const stepMap = { ingestion: 0, extraction: 1, metrics: 2, alerts: 3, completed: 4 };
+    const stepMap = { ingestion: 0, reprocessing: 1, extraction: 2, metrics: 3, alerts: 4, completed: 5 };
     return stepMap[pipelineStatus.current_step] ?? 0;
   };
 
@@ -175,11 +175,17 @@ const PipelineProgressCard = () => {
         )}
 
         {/* Step results summary */}
-        {(pipelineStatus?.ingestion_result || pipelineStatus?.extraction_result || pipelineStatus?.metrics_result) && (
+        {(pipelineStatus?.ingestion_result || pipelineStatus?.reprocessing_result || pipelineStatus?.extraction_result || pipelineStatus?.metrics_result) && (
           <Box sx={{ mt: 1.5, pt: 1.5, borderTop: 1, borderColor: 'divider' }}>
             {pipelineStatus?.ingestion_result && (
               <Typography variant="caption" color="text.secondary" display="block">
                 Ingested: {pipelineStatus.ingestion_result.new_items || 0} items from {pipelineStatus.ingestion_result.total_sources || 0} sources
+              </Typography>
+            )}
+            {pipelineStatus?.reprocessing_result && (
+              <Typography variant="caption" color="text.secondary" display="block">
+                Retried: {pipelineStatus.reprocessing_result.reprocessed_count || 0} failed,
+                {' '}{pipelineStatus.reprocessing_result.processed || 0} recovered
               </Typography>
             )}
             {pipelineStatus?.extraction_result && (

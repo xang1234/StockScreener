@@ -291,6 +291,7 @@ class ThemePipelineRun(Base):
     total_sources = Column(Integer, default=0)
     items_ingested = Column(Integer, default=0)
     items_processed = Column(Integer, default=0)
+    items_reprocessed = Column(Integer, default=0)
     themes_extracted = Column(Integer, default=0)
     themes_updated = Column(Integer, default=0)
     alerts_generated = Column(Integer, default=0)

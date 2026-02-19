@@ -30,6 +30,7 @@ export function PipelineProvider({ children }) {
               queryClient.invalidateQueries({ queryKey: ['themeRankings'] });
               queryClient.invalidateQueries({ queryKey: ['emergingThemes'] });
               queryClient.invalidateQueries({ queryKey: ['themeAlerts'] });
+              queryClient.invalidateQueries({ queryKey: ['failedItemsCount'] });
             }
           }
         } catch (error) {
@@ -52,7 +53,7 @@ export function PipelineProvider({ children }) {
       status: 'queued',
       current_step: null,
       step_number: 0,
-      total_steps: 4,
+      total_steps: 5,
       percent: 0,
       message: 'Pipeline queued...'
     });

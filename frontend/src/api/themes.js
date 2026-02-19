@@ -326,6 +326,19 @@ export const listPipelineRuns = async (limit = 10) => {
   return response.data;
 };
 
+/**
+ * Get count of content items with extraction errors eligible for retry.
+ *
+ * @param {string|null} pipeline - Filter by pipeline (optional)
+ * @returns {Promise<Object>} Object with failed_count and max_age_days
+ */
+export const getFailedItemsCount = async (pipeline = null) => {
+  const params = {};
+  if (pipeline) params.pipeline = pipeline;
+  const response = await apiClient.get('/v1/themes/pipeline/failed-count', { params });
+  return response.data;
+};
+
 // ==================== Theme Merge Operations ====================
 
 /**

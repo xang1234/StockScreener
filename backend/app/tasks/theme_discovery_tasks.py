@@ -171,6 +171,83 @@ def extract_themes(limit: int = 50, pipeline: str = None):
         db.close()
 
 
+@celery_app.task(name='app.tasks.theme_discovery_tasks.reprocess_failed_themes')
+def reprocess_failed_themes(limit: int = 100, pipeline: str = None):
+    """
+    Reprocess content items that previously failed LLM extraction.
+
+    Finds items with extraction_error set, resets them, and retries
+    extraction. Should be run before new extraction to use fresh rate limits.
+
+    Args:
+        limit: Maximum number of failed items to reprocess per pipeline
+        pipeline: Pipeline to reprocess for (technical/fundamental).
+                  If None, runs for both pipelines sequentially.
+
+    Returns:
+        Dict with reprocessing statistics
+    """
+    pipelines = [pipeline] if pipeline else ["technical", "fundamental"]
+
+    logger.info("=" * 60)
+    logger.info("TASK: Reprocess Failed Theme Extractions")
+    logger.info(f"Processing up to {limit} failed items for pipelines: {pipelines}")
+    logger.info("=" * 60)
+
+    from ..services.theme_extraction_service import ThemeExtractionService
+
+    db = SessionLocal()
+    start_time = time.time()
+
+    combined_result = {
+        'reprocessed_count': 0,
+        'processed': 0,
+        'total_mentions': 0,
+        'errors': 0,
+        'pipelines': pipelines,
+    }
+
+    try:
+        for p in pipelines:
+            logger.info(f"Reprocessing failed items for pipeline: {p}")
+            service = ThemeExtractionService(db, pipeline=p)
+            result = service.reprocess_failed_items(limit=limit)
+
+            combined_result['reprocessed_count'] += result.get('reprocessed_count', 0)
+            combined_result['processed'] += result.get('processed', 0)
+            combined_result['total_mentions'] += result.get('total_mentions', 0)
+            combined_result['errors'] += result.get('errors', 0)
+
+        duration = time.time() - start_time
+
+        logger.info(f"Reprocessing complete in {duration:.2f}s")
+        logger.info(f"  Items reset for retry: {combined_result['reprocessed_count']}")
+        logger.info(f"  Successfully processed: {combined_result['processed']}")
+        logger.info(f"  Theme mentions recovered: {combined_result['total_mentions']}")
+        logger.info(f"  Errors: {combined_result['errors']}")
+        logger.info("=" * 60)
+
+        return {
+            'reprocessed_count': combined_result['reprocessed_count'],
+            'processed': combined_result['processed'],
+            'total_mentions': combined_result['total_mentions'],
+            'errors': combined_result['errors'],
+            'duration_seconds': round(duration, 2),
+            'timestamp': datetime.now().isoformat()
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error in reprocess failed themes task: {e}", exc_info=True)
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }
+
+    finally:
+        db.close()
+
+
 @celery_app.task(name='app.tasks.theme_discovery_tasks.calculate_theme_metrics')
 def calculate_theme_metrics(pipeline: str = None):
     """
@@ -470,9 +547,10 @@ def run_full_pipeline(self, run_id: str = None, pipeline: str = None):
 
     Executes in order:
     1. Content ingestion
-    2. Theme extraction (pipeline-specific)
-    3. Metrics calculation (pipeline-specific)
-    4. Alert checking
+    2. Reprocess previously failed items (retry before consuming rate limits)
+    3. Theme extraction (pipeline-specific)
+    4. Metrics calculation (pipeline-specific)
+    5. Alert checking
 
     This is a convenience task for running everything at once.
     Ideal for daily runs after market close.
@@ -512,19 +590,19 @@ def run_full_pipeline(self, run_id: str = None, pipeline: str = None):
                 pipeline_run.status = 'running'
                 db.commit()
 
-        # Step 1/4: Content Ingestion (0-25%)
+        # Step 1/5: Content Ingestion (0%)
         self.update_state(
             state='PROGRESS',
             meta={
                 'current_step': 'ingestion',
                 'step_number': 1,
-                'total_steps': 4,
+                'total_steps': 5,
                 'percent': 0,
                 'message': 'Fetching content from sources...'
             }
         )
 
-        logger.info("\n[Step 1/4] Content Ingestion...")
+        logger.info("\n[Step 1/5] Content Ingestion...")
         results['ingestion'] = ingest_content()
 
         if pipeline_run:
@@ -533,20 +611,42 @@ def run_full_pipeline(self, run_id: str = None, pipeline: str = None):
             pipeline_run.items_ingested = results['ingestion'].get('new_items', 0)
             db.commit()
 
-        # Step 2/4: Theme Extraction (25-50%)
+        # Step 2/5: Reprocess Failed Items (20%)
         self.update_state(
             state='PROGRESS',
             meta={
-                'current_step': 'extraction',
+                'current_step': 'reprocessing',
                 'step_number': 2,
-                'total_steps': 4,
-                'percent': 25,
-                'message': 'Extracting themes from content...',
+                'total_steps': 5,
+                'percent': 20,
+                'message': 'Retrying previously failed extractions...',
                 'ingestion_result': results['ingestion']
             }
         )
 
-        logger.info("\n[Step 2/4] Theme Extraction...")
+        logger.info("\n[Step 2/5] Reprocess Failed Items...")
+        results['reprocessing'] = reprocess_failed_themes(limit=100, pipeline=pipeline)
+
+        if pipeline_run:
+            pipeline_run.current_step = 'reprocessing'
+            pipeline_run.items_reprocessed = results['reprocessing'].get('reprocessed_count', 0)
+            db.commit()
+
+        # Step 3/5: Theme Extraction (40%)
+        self.update_state(
+            state='PROGRESS',
+            meta={
+                'current_step': 'extraction',
+                'step_number': 3,
+                'total_steps': 5,
+                'percent': 40,
+                'message': 'Extracting themes from content...',
+                'ingestion_result': results['ingestion'],
+                'reprocessing_result': results['reprocessing'],
+            }
+        )
+
+        logger.info("\n[Step 3/5] Theme Extraction...")
         results['extraction'] = extract_themes(limit=100, pipeline=pipeline)
 
         if pipeline_run:
@@ -555,21 +655,22 @@ def run_full_pipeline(self, run_id: str = None, pipeline: str = None):
             pipeline_run.themes_extracted = len(results['extraction'].get('new_themes', []))
             db.commit()
 
-        # Step 3/4: Metrics Calculation (50-75%)
+        # Step 4/5: Metrics Calculation (60%)
         self.update_state(
             state='PROGRESS',
             meta={
                 'current_step': 'metrics',
-                'step_number': 3,
-                'total_steps': 4,
-                'percent': 50,
+                'step_number': 4,
+                'total_steps': 5,
+                'percent': 60,
                 'message': 'Calculating theme metrics...',
                 'ingestion_result': results['ingestion'],
-                'extraction_result': results['extraction']
+                'reprocessing_result': results['reprocessing'],
+                'extraction_result': results['extraction'],
             }
         )
 
-        logger.info("\n[Step 3/4] Metrics Calculation...")
+        logger.info("\n[Step 3/5] Metrics Calculation...")
         results['metrics'] = calculate_theme_metrics(pipeline=pipeline)
 
         if pipeline_run:
@@ -577,22 +678,23 @@ def run_full_pipeline(self, run_id: str = None, pipeline: str = None):
             pipeline_run.themes_updated = results['metrics'].get('themes_updated', 0)
             db.commit()
 
-        # Step 4/4: Alert Check (75-100%)
+        # Step 5/5: Alert Check (80%)
         self.update_state(
             state='PROGRESS',
             meta={
                 'current_step': 'alerts',
-                'step_number': 4,
-                'total_steps': 4,
-                'percent': 75,
+                'step_number': 5,
+                'total_steps': 5,
+                'percent': 80,
                 'message': 'Checking for alerts...',
                 'ingestion_result': results['ingestion'],
+                'reprocessing_result': results['reprocessing'],
                 'extraction_result': results['extraction'],
-                'metrics_result': results['metrics']
+                'metrics_result': results['metrics'],
             }
         )
 
-        logger.info("\n[Step 4/4] Alert Check...")
+        logger.info("\n[Step 5/5] Alert Check...")
         results['alerts'] = check_alerts()
 
         total_duration = time.time() - start_time

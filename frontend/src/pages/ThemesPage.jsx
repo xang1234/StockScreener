@@ -68,6 +68,7 @@ import {
   dismissAlert,
   runPipelineAsync,
   getMergeSuggestions,
+  getFailedItemsCount,
 } from '../api/themes';
 import ArticleIcon from '@mui/icons-material/Article';
 import SmartToyIcon from '@mui/icons-material/SmartToy';
@@ -635,6 +636,12 @@ function ThemesPage() {
     queryFn: () => getMergeSuggestions('pending', 100),
   });
 
+  // Fetch failed items count for retry badge
+  const { data: failedCount } = useQuery({
+    queryKey: ['failedItemsCount', selectedPipeline],
+    queryFn: () => getFailedItemsCount(selectedPipeline),
+  });
+
   // Start async pipeline using global context
   const handleRunPipeline = async () => {
     try {
@@ -767,16 +774,25 @@ function ThemesPage() {
           >
             LLM Settings
           </Button>
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={isPipelineRunning ? <CircularProgress size={12} /> : <PlayArrowIcon />}
-            onClick={handleRunPipeline}
-            disabled={isPipelineRunning}
-            sx={{ fontSize: '0.65rem', py: 0.15, px: 0.5, '& .MuiSvgIcon-root': { fontSize: '0.85rem' } }}
-          >
-            {isPipelineRunning ? 'Running...' : 'Run Pipeline'}
-          </Button>
+          <Tooltip title={failedCount?.failed_count > 0 ? `${failedCount.failed_count} items pending retry` : ''}>
+            <Badge
+              badgeContent={failedCount?.failed_count || 0}
+              color="error"
+              max={999}
+              invisible={!failedCount?.failed_count}
+            >
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={isPipelineRunning ? <CircularProgress size={12} /> : <PlayArrowIcon />}
+                onClick={handleRunPipeline}
+                disabled={isPipelineRunning}
+                sx={{ fontSize: '0.65rem', py: 0.15, px: 0.5, '& .MuiSvgIcon-root': { fontSize: '0.85rem' } }}
+              >
+                {isPipelineRunning ? 'Running...' : 'Run Pipeline'}
+              </Button>
+            </Badge>
+          </Tooltip>
           <Button
             size="small"
             variant="outlined"

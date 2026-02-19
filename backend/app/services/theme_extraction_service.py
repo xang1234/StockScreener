@@ -119,6 +119,7 @@ class ThemeExtractionService:
         self.configured_model = None  # Model ID from settings
         self._load_configured_model()
         self._init_client()
+        self._load_reprocessing_config()
 
         # Known ticker patterns for validation
         self.ticker_pattern = re.compile(r'^[A-Z]{1,5}$')
@@ -160,6 +161,17 @@ class ThemeExtractionService:
         except Exception as e:
             logger.warning(f"Could not load configured model: {e}")
             self.configured_model = None
+
+    def _load_reprocessing_config(self):
+        """Load reprocessing settings from database."""
+        try:
+            from ..models.app_settings import AppSetting
+            setting = self.db.query(AppSetting).filter(
+                AppSetting.key == "reprocessing_max_age_days"
+            ).first()
+            self.max_age_days = int(setting.value) if setting else 30
+        except Exception:
+            self.max_age_days = 30
 
     def _init_client(self):
         """Initialize LLM client - try LLMService first, then Gemini"""
@@ -402,11 +414,11 @@ Example themes for this pipeline: {examples_str}
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse LLM response as JSON: {e}")
-            logger.error(f"Raw response text: {response_text[:500] if response_text else 'EMPTY'}")
-            return []
+            logger.error(f"Raw response: {response_text[:500] if response_text else 'EMPTY'}")
+            return []  # LLM responded but format was bad — not worth retrying
         except Exception as e:
-            logger.error(f"Error extracting themes: {e}")
-            return []
+            logger.error(f"LLM extraction failed (will retry): {e}")
+            raise  # Re-raise so process_batch() marks extraction_error
 
     def process_content_item(self, content_item: ContentItem) -> int:
         """
@@ -572,6 +584,24 @@ Example themes for this pipeline: {examples_str}
                     constituent.confidence * 0.8 + mention_data["confidence"] * 0.2
                 )
 
+    def _get_pipeline_source_ids(self) -> list[int]:
+        """Get IDs of content sources assigned to this pipeline."""
+        from ..models.theme import ContentSource
+        pipeline_source_ids = []
+        sources = self.db.query(ContentSource).filter(
+            ContentSource.is_active == True
+        ).all()
+        for source in sources:
+            source_pipelines = source.pipelines or ["technical", "fundamental"]
+            if isinstance(source_pipelines, str):
+                try:
+                    source_pipelines = json.loads(source_pipelines)
+                except Exception:
+                    source_pipelines = ["technical", "fundamental"]
+            if self.pipeline in source_pipelines:
+                pipeline_source_ids.append(source.id)
+        return pipeline_source_ids
+
     def process_batch(self, limit: int = 50) -> dict:
         """
         Process a batch of unprocessed content items
@@ -580,25 +610,7 @@ Example themes for this pipeline: {examples_str}
 
         Returns summary of processing results
         """
-        from ..models.theme import ContentSource
-
-        # Get source IDs that are assigned to this pipeline
-        # pipelines column is JSON array like ["technical", "fundamental"]
-        pipeline_source_ids = []
-        sources = self.db.query(ContentSource).filter(
-            ContentSource.is_active == True
-        ).all()
-
-        for source in sources:
-            source_pipelines = source.pipelines or ["technical", "fundamental"]
-            if isinstance(source_pipelines, str):
-                import json
-                try:
-                    source_pipelines = json.loads(source_pipelines)
-                except:
-                    source_pipelines = ["technical", "fundamental"]
-            if self.pipeline in source_pipelines:
-                pipeline_source_ids.append(source.id)
+        pipeline_source_ids = self._get_pipeline_source_ids()
 
         # Get unprocessed items from sources in this pipeline
         query = self.db.query(ContentItem).filter(
@@ -652,6 +664,105 @@ Example themes for this pipeline: {examples_str}
                 results["metrics_updated"] = 0
 
         return results
+
+    def reprocess_failed_items(self, limit: int = 100) -> dict:
+        """
+        Reprocess content items that previously failed LLM extraction.
+
+        Finds items with extraction_error set, resets them to unprocessed,
+        then delegates to process_batch() for retry.
+
+        Returns dict with reprocessing statistics.
+        """
+        from datetime import timedelta
+        cutoff_date = datetime.utcnow() - timedelta(days=self.max_age_days)
+        pipeline_source_ids = self._get_pipeline_source_ids()
+
+        # Find failed items eligible for retry
+        query = self.db.query(ContentItem).filter(
+            ContentItem.is_processed == True,
+            ContentItem.extraction_error != None,
+            ContentItem.published_at >= cutoff_date,
+        )
+        if pipeline_source_ids:
+            query = query.filter(ContentItem.source_id.in_(pipeline_source_ids))
+
+        failed_items = query.order_by(
+            ContentItem.published_at.desc()
+        ).limit(limit).all()
+
+        if not failed_items:
+            logger.info(f"[{self.pipeline}] No failed items to reprocess")
+            return {
+                "reprocessed_count": 0,
+                "processed": 0,
+                "total_mentions": 0,
+                "errors": 0,
+                "pipeline": self.pipeline,
+            }
+
+        # Reset failed items so process_batch() picks them up
+        item_ids = [item.id for item in failed_items]
+        logger.info(f"[{self.pipeline}] Resetting {len(failed_items)} failed items for reprocessing")
+        for item in failed_items:
+            item.is_processed = False
+            item.extraction_error = None
+            item.processed_at = None
+        self.db.commit()
+
+        # Delegate to existing process_batch() — all logic reused
+        result = self.process_batch(limit=limit)
+        result["reprocessed_count"] = len(item_ids)
+        return result
+
+    def identify_silent_failures(self, max_age_days: int = None) -> dict:
+        """
+        Identify content items that silently failed LLM extraction.
+
+        These are items marked as processed (is_processed=True, extraction_error=NULL)
+        but have NO associated theme_mentions — meaning extract_from_content() returned []
+        due to an error that was silently caught.
+
+        Resets them to unprocessed so the next process_batch() picks them up.
+
+        Returns dict with count and list of reset item IDs.
+        """
+        from datetime import timedelta
+        from sqlalchemy import and_
+
+        age_days = max_age_days if max_age_days is not None else self.max_age_days
+        cutoff_date = datetime.utcnow() - timedelta(days=age_days)
+        pipeline_source_ids = self._get_pipeline_source_ids()
+
+        # Subquery: content_item_ids that have at least one theme mention
+        mentioned_ids = self.db.query(ThemeMention.content_item_id).distinct().subquery()
+
+        # Find items that are "processed" but have zero mentions
+        query = self.db.query(ContentItem).filter(
+            ContentItem.is_processed == True,
+            ContentItem.extraction_error == None,
+            ContentItem.processed_at != None,
+            ContentItem.published_at >= cutoff_date,
+            ~ContentItem.id.in_(self.db.query(mentioned_ids.c.content_item_id)),
+        )
+        if pipeline_source_ids:
+            query = query.filter(ContentItem.source_id.in_(pipeline_source_ids))
+
+        silent_failures = query.all()
+
+        if not silent_failures:
+            logger.info(f"[{self.pipeline}] No silent failures found")
+            return {"reset_count": 0, "items": []}
+
+        item_ids = [item.id for item in silent_failures]
+        logger.info(f"[{self.pipeline}] Found {len(silent_failures)} silent failures, resetting for reprocessing")
+
+        for item in silent_failures:
+            item.is_processed = False
+            item.processed_at = None
+        self.db.commit()
+
+        return {"reset_count": len(item_ids), "items": item_ids}
 
 
 class ThemeNormalizationService:
