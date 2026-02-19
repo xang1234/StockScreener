@@ -1,7 +1,9 @@
 """
 Main FastAPI application entry point.
 """
+import asyncio
 import json
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -113,6 +115,15 @@ async def lifespan(app: FastAPI):
                 print(f"WARNING: Expected WAL journal mode but got '{journal_mode}'. "
                       "Concurrent writes may cause corruption.")
 
+        # Check WAL file size — large WAL indicates checkpoint failure or concurrent access
+        db_path = settings.database_url.replace("sqlite:///", "")
+        wal_path = db_path + "-wal"
+        if os.path.exists(wal_path):
+            wal_mb = os.path.getsize(wal_path) / (1024 * 1024)
+            if wal_mb > 100:
+                print(f"WARNING: WAL file is {wal_mb:.0f}MB — may indicate "
+                      "concurrent access or checkpoint failure")
+
     # Run schema migrations (idempotent — safe on every startup)
     run_universe_migration()
     run_feature_store_migration()
@@ -166,39 +177,51 @@ async def liveness():
 
 @app.get("/readyz")
 async def readiness():
-    """Readiness probe - checks database and Redis connectivity."""
+    """Readiness probe - checks database and Redis connectivity.
+
+    Uses sqlite_master count (sub-ms) instead of PRAGMA quick_check (1-3s)
+    to avoid blocking the event loop. Redis is a soft dependency — its
+    absence degrades the service but doesn't make it unhealthy.
+    """
     checks = {}
     healthy = True
 
-    # DB: verify connectivity and structural integrity via quick_check
-    # quick_check verifies B-tree structure without full row scan (~1-3s on 2.7GB DB)
+    # DB check — offloaded to thread pool (non-blocking)
     try:
-        with engine.connect() as conn:
-            result = conn.execute(text("PRAGMA quick_check")).scalar()
-            if result == "ok":
-                checks["database"] = "ok"
-            else:
-                checks["database"] = f"corruption detected: {result}"
-                healthy = False
+        def _check_db():
+            with engine.connect() as conn:
+                count = conn.execute(text("SELECT count(*) FROM sqlite_master")).scalar()
+                return count > 0
+
+        if await asyncio.to_thread(_check_db):
+            checks["database"] = "ok"
+        else:
+            checks["database"] = "error: no tables found"
+            healthy = False
     except Exception as e:
         checks["database"] = f"error: {type(e).__name__}"
         healthy = False
 
-    # Redis: verify connectivity via ping
+    # Redis check — soft dependency (degraded, not unhealthy)
     try:
-        client = get_redis_client()
-        if client and client.ping():
+        def _check_redis():
+            client = get_redis_client()
+            return client and client.ping()
+
+        if await asyncio.to_thread(_check_redis):
             checks["redis"] = "ok"
         else:
-            checks["redis"] = "error: unavailable"
-            healthy = False
+            checks["redis"] = "warning: unavailable"
     except Exception as e:
-        checks["redis"] = f"error: {type(e).__name__}"
-        healthy = False
+        checks["redis"] = f"warning: {type(e).__name__}"
 
     status_code = 200 if healthy else 503
+    status_label = "ok" if healthy else "unhealthy"
+    if healthy and checks.get("redis", "").startswith("warning"):
+        status_label = "degraded"
+
     return JSONResponse(
-        content={"status": "ok" if healthy else "degraded", "checks": checks},
+        content={"status": status_label, "checks": checks},
         status_code=status_code,
     )
 

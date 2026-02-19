@@ -1604,3 +1604,52 @@ def wal_checkpoint():
             'error': str(e),
             'timestamp': datetime.now().isoformat(),
         }
+
+
+@celery_app.task(name='app.tasks.cache_tasks.daily_integrity_check')
+def daily_integrity_check():
+    """
+    Run PRAGMA quick_check to detect database corruption.
+
+    Runs daily at 2:00 AM (30 min after WAL checkpoint) as a background
+    Celery task instead of in the health check endpoint. Logs WARNING
+    on corruption so operators can investigate without breaking the
+    readiness probe.
+
+    Returns:
+        Dict with integrity check result
+    """
+    from sqlalchemy import text
+
+    logger.info("TASK: Daily database integrity check (PRAGMA quick_check)")
+
+    try:
+        from ..database import engine
+
+        with engine.connect() as conn:
+            result = conn.execute(text("PRAGMA quick_check")).scalar()
+
+        if result == "ok":
+            logger.info("Database integrity check passed")
+            return {
+                'status': 'ok',
+                'completed_at': datetime.now().isoformat(),
+            }
+        else:
+            logger.warning(
+                "DATABASE INTEGRITY WARNING: PRAGMA quick_check returned: %s "
+                "— run: sqlite3 data/stockscanner.db 'PRAGMA quick_check;' | head -20",
+                result,
+            )
+            return {
+                'status': 'corruption_detected',
+                'detail': str(result),
+                'completed_at': datetime.now().isoformat(),
+            }
+
+    except Exception as e:
+        logger.error("Error in daily_integrity_check task: %s", e, exc_info=True)
+        return {
+            'error': str(e),
+            'timestamp': datetime.now().isoformat(),
+        }

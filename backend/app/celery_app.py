@@ -258,6 +258,17 @@ if settings.cache_warmup_enabled:
             ),
         },
 
+        # Daily database integrity check (PRAGMA quick_check)
+        # Runs at 2:00 AM ET, 30 min after WAL checkpoint, to detect corruption
+        # early. Logs warnings instead of blocking the health check endpoint.
+        'daily-integrity-check': {
+            'task': 'app.tasks.cache_tasks.daily_integrity_check',
+            'schedule': crontab(
+                hour=2,
+                minute=0,
+            ),
+        },
+
         # Monthly cleanup of old price data (keep 5 years)
         # Runs 1st of each month at 1 AM ET
         # Low priority - prevents unbounded database growth over time

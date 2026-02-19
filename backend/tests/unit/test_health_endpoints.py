@@ -29,9 +29,9 @@ class TestReadyz:
     async def test_healthy_when_db_and_redis_up(self, client):
         mock_redis = MagicMock()
         mock_redis.ping.return_value = True
-        # Mock engine.connect() to return a quick_check "ok" result
+        # Mock engine.connect() to return a table count > 0
         mock_result = MagicMock()
-        mock_result.scalar.return_value = "ok"
+        mock_result.scalar.return_value = 15  # 15 tables in schema
         mock_conn = MagicMock()
         mock_conn.execute.return_value = mock_result
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
@@ -47,20 +47,22 @@ class TestReadyz:
             assert data["checks"]["database"] == "ok"
             assert data["checks"]["redis"] == "ok"
 
-    async def test_503_when_redis_unavailable(self, client):
+    async def test_degraded_when_redis_unavailable(self, client):
+        """Redis is a soft dependency — unavailable Redis degrades but doesn't fail."""
         with patch("app.main.get_redis_client", return_value=None):
             response = await client.get("/readyz")
-            assert response.status_code == 503
+            assert response.status_code == 200
             data = response.json()
             assert data["status"] == "degraded"
-            assert "error" in data["checks"]["redis"]
+            assert "warning" in data["checks"]["redis"]
 
-    async def test_503_when_redis_ping_fails(self, client):
+    async def test_degraded_when_redis_ping_fails(self, client):
+        """Redis connection error results in degraded (200), not unhealthy (503)."""
         mock_client = MagicMock()
         mock_client.ping.side_effect = ConnectionError("refused")
         with patch("app.main.get_redis_client", return_value=mock_client):
             response = await client.get("/readyz")
-            assert response.status_code == 503
+            assert response.status_code == 200
             data = response.json()
             assert data["status"] == "degraded"
             assert "ConnectionError" in data["checks"]["redis"]
@@ -71,12 +73,13 @@ class TestReadyz:
             response = await client.get("/readyz")
             assert response.status_code == 503
             data = response.json()
-            assert data["status"] == "degraded"
+            assert data["status"] == "unhealthy"
             assert "error" in data["checks"]["database"]
 
-    async def test_503_when_db_corruption_detected(self, client):
+    async def test_503_when_db_has_no_tables(self, client):
+        """Empty schema (count=0 from sqlite_master) is treated as unhealthy."""
         mock_result = MagicMock()
-        mock_result.scalar.return_value = "*** in table scan_results: row 1234 missing"
+        mock_result.scalar.return_value = 0  # No tables
         mock_conn = MagicMock()
         mock_conn.execute.return_value = mock_result
         mock_conn.__enter__ = MagicMock(return_value=mock_conn)
@@ -87,8 +90,8 @@ class TestReadyz:
             response = await client.get("/readyz")
             assert response.status_code == 503
             data = response.json()
-            assert data["status"] == "degraded"
-            assert "corruption detected" in data["checks"]["database"]
+            assert data["status"] == "unhealthy"
+            assert "no tables" in data["checks"]["database"]
 
 
 @pytest.mark.asyncio

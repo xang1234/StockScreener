@@ -53,6 +53,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   # Celery Worker - General Queue (concurrency=1 for SQLite safety)
