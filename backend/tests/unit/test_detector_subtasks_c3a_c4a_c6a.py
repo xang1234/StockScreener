@@ -14,6 +14,7 @@ from app.analysis.patterns.cup_handle import CupHandleDetector
 from app.analysis.patterns.detectors import DetectorOutcome, PatternDetectorInput
 from app.analysis.patterns.first_pullback import FirstPullbackDetector
 from app.analysis.patterns.high_tight_flag import HighTightFlagDetector
+from app.analysis.patterns.nr7_inside_day import NR7InsideDayDetector
 from app.analysis.patterns.three_weeks_tight import ThreeWeeksTightDetector
 from app.analysis.patterns.vcp_wrapper import VCPWrapperDetector
 
@@ -169,7 +170,7 @@ def test_three_weeks_tight_uses_relaxed_mode_when_strict_fails():
     close = np.concatenate(
         [
             np.linspace(70.0, 95.0, 24, endpoint=False),
-            np.array([100.0, 101.1, 99.8, 100.6, 100.3, 100.7]),
+            np.array([99.3, 99.2, 101.0, 100.6, 98.65, 99.5]),
         ]
     )
     frame = _ohlcv_frame(index=index, close=close)
@@ -188,6 +189,7 @@ def test_three_weeks_tight_uses_relaxed_mode_when_strict_fails():
     best = result.candidates[0]
     assert best["metrics"]["tight_mode"] == "relaxed"
     assert best["checks"]["tight_mode_relaxed"] is True
+    assert best["checks"]["tight_mode_strict"] is False
 
 
 def test_three_weeks_tight_resamples_from_daily_when_weekly_absent():
@@ -210,6 +212,121 @@ def test_three_weeks_tight_resamples_from_daily_when_weekly_absent():
     )
     assert result.outcome == DetectorOutcome.DETECTED
     assert "weekly_ohlcv_resampled_from_daily" in result.warnings
+
+
+def _nr7_inside_day_frame(
+    *,
+    force_nr7: bool = True,
+    force_inside_day: bool = True,
+) -> pd.DataFrame:
+    length = 50
+    index = pd.bdate_range("2025-01-02", periods=length)
+    close = np.linspace(100.0, 112.0, length)
+    frame = _ohlcv_frame(index=index, close=close)
+
+    high = frame["High"].to_numpy(dtype=float)
+    low = frame["Low"].to_numpy(dtype=float)
+    volume = frame["Volume"].to_numpy(dtype=float)
+
+    prev_idx = length - 2
+    trigger_idx = length - 1
+
+    high[prev_idx] = 110.0
+    low[prev_idx] = 106.0  # Range 4.0
+    high[trigger_idx] = 109.6 if force_inside_day else 112.4
+    low[trigger_idx] = 106.6 if force_inside_day else 104.9
+    if force_nr7:
+        high[trigger_idx] = 108.2 if force_inside_day else 111.1
+        low[trigger_idx] = 106.9 if force_inside_day else 109.9  # Range 1.2
+
+    frame["High"] = high
+    frame["Low"] = low
+    frame["Close"] = (high + low) / 2.0
+    frame["Open"] = frame["Close"] * 0.995
+    volume[-1] = 900_000.0
+    frame["Volume"] = volume
+    return frame
+
+
+def test_nr7_inside_day_detects_combined_trigger_subtype():
+    frame = _nr7_inside_day_frame(force_nr7=True, force_inside_day=True)
+    detector_input = PatternDetectorInput(
+        symbol="NR7",
+        timeframe="daily",
+        daily_bars=len(frame),
+        weekly_bars=60,
+        features={"daily_ohlcv": frame},
+    )
+
+    result = NR7InsideDayDetector().detect_safe(
+        detector_input, DEFAULT_SETUP_ENGINE_PARAMETERS
+    )
+    assert result.outcome == DetectorOutcome.DETECTED
+    best = result.candidates[0]
+    assert best["pattern"] == "nr7_inside_day"
+    assert best["metrics"]["trigger_subtype"] == "nr7_inside_day"
+    assert best["checks"]["trigger_is_combined"] is True
+    assert "trigger_range_points" in best["metrics"]
+    assert "volume_ratio_20d" in best["metrics"]
+
+
+def test_nr7_inside_day_detects_nr7_only_subtype():
+    frame = _nr7_inside_day_frame(force_nr7=True, force_inside_day=False)
+    detector_input = PatternDetectorInput(
+        symbol="NR7",
+        timeframe="daily",
+        daily_bars=len(frame),
+        weekly_bars=60,
+        features={"daily_ohlcv": frame},
+    )
+
+    result = NR7InsideDayDetector().detect_safe(
+        detector_input, DEFAULT_SETUP_ENGINE_PARAMETERS
+    )
+    assert result.outcome == DetectorOutcome.DETECTED
+    best = result.candidates[0]
+    assert best["metrics"]["trigger_subtype"] == "nr7"
+    assert best["checks"]["trigger_is_nr7"] is True
+    assert best["checks"]["trigger_is_inside_day"] is False
+
+
+def test_nr7_inside_day_detects_inside_day_only_subtype():
+    frame = _nr7_inside_day_frame(force_nr7=False, force_inside_day=True)
+    detector_input = PatternDetectorInput(
+        symbol="NR7",
+        timeframe="daily",
+        daily_bars=len(frame),
+        weekly_bars=60,
+        features={"daily_ohlcv": frame},
+    )
+
+    result = NR7InsideDayDetector().detect_safe(
+        detector_input, DEFAULT_SETUP_ENGINE_PARAMETERS
+    )
+    assert result.outcome == DetectorOutcome.DETECTED
+    best = result.candidates[0]
+    assert best["metrics"]["trigger_subtype"] == "inside_day"
+    assert best["checks"]["trigger_is_nr7"] is False
+    assert best["checks"]["trigger_is_inside_day"] is True
+
+
+def test_nr7_inside_day_returns_not_detected_when_no_trigger():
+    index = pd.bdate_range("2025-01-02", periods=50)
+    close = np.linspace(100.0, 120.0, len(index))
+    frame = _ohlcv_frame(index=index, close=close)
+    detector_input = PatternDetectorInput(
+        symbol="NR7",
+        timeframe="daily",
+        daily_bars=len(frame),
+        weekly_bars=60,
+        features={"daily_ohlcv": frame},
+    )
+
+    result = NR7InsideDayDetector().detect_safe(
+        detector_input, DEFAULT_SETUP_ENGINE_PARAMETERS
+    )
+    assert result.outcome == DetectorOutcome.NOT_DETECTED
+    assert "nr7_inside_day_trigger_not_found" in result.failed_checks
 
 
 def test_high_tight_flag_returns_flag_validated_candidate():

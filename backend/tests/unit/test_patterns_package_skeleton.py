@@ -95,13 +95,9 @@ def test_analysis_layer_modules_do_not_import_scanner_layer():
         assert "app.scanners" not in source
 
 
-def test_stub_modules_reference_followup_bead_todos():
-    expected_todos = {
-        "SE-C5": nr7_module,
-    }
-    for todo, module in expected_todos.items():
-        source = inspect.getsource(module)
-        assert f"TODO({todo})" in source
+def test_nr7_module_no_longer_has_se_c5_todo_marker():
+    source = inspect.getsource(nr7_module)
+    assert "TODO(SE-C5)" not in source
 
 
 def test_public_api_exports_stable_symbols_only():

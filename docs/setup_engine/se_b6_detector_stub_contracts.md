@@ -5,7 +5,7 @@
 - `backend/app/analysis/patterns/three_weeks_tight.py` (implemented through SE-C2)
 - `backend/app/analysis/patterns/high_tight_flag.py` (implemented through SE-C3b)
 - `backend/app/analysis/patterns/cup_handle.py` (implemented through SE-C4b)
-- `backend/app/analysis/patterns/nr7_inside_day.py` (`TODO(SE-C5)`)
+- `backend/app/analysis/patterns/nr7_inside_day.py` (implemented through SE-C5)
 - `backend/app/analysis/patterns/first_pullback.py` (implemented through SE-C6b)
 
 ## Interface Boundary
