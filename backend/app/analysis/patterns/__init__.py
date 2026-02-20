@@ -1,6 +1,10 @@
 """Stable public APIs for Setup Engine pattern analysis."""
 
-from .aggregator import AggregatedPatternOutput, SetupEngineAggregator
+from .aggregator import (
+    AggregatedPatternOutput,
+    DetectorExecutionTrace,
+    SetupEngineAggregator,
+)
 from .cup_handle import CupHandleDetector
 from .detectors import (
     PatternDetector,
@@ -37,6 +41,7 @@ from .technicals import (
     bollinger_band_width_percent,
     bollinger_bands,
     detect_swings,
+    has_incomplete_last_period,
     resample_ohlcv,
     rolling_linear_regression,
     rolling_percentile_rank,
@@ -50,6 +55,7 @@ from .vcp_wrapper import VCPWrapperDetector
 
 __all__ = [
     "AggregatedPatternOutput",
+    "DetectorExecutionTrace",
     "SetupEngineAggregator",
     "PatternCandidate",
     "PatternCandidateModel",
@@ -77,6 +83,7 @@ __all__ = [
     "assert_valid_setup_engine_report_payload",
     "canonical_setup_engine_report_examples",
     "resample_ohlcv",
+    "has_incomplete_last_period",
     "true_range",
     "true_range_from_ohlc",
     "true_range_percent",

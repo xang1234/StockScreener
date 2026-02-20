@@ -29,6 +29,7 @@ def resample_ohlcv(
     df: pd.DataFrame,
     *,
     rule: str = "W-FRI",
+    exclude_incomplete_last_period: bool = False,
     open_col: str = "Open",
     high_col: str = "High",
     low_col: str = "Low",
@@ -37,16 +38,16 @@ def resample_ohlcv(
 ) -> pd.DataFrame:
     """Resample OHLCV bars using first/max/min/last/sum aggregation."""
     _require_datetime_index(df)
+    ordered = df.sort_index()
 
-    o = _resolve_column(df, open_col, open_col.lower())
-    h = _resolve_column(df, high_col, high_col.lower())
-    l = _resolve_column(df, low_col, low_col.lower())
-    c = _resolve_column(df, close_col, close_col.lower())
-    v = _resolve_column(df, volume_col, volume_col.lower())
+    o = _resolve_column(ordered, open_col, open_col.lower())
+    h = _resolve_column(ordered, high_col, high_col.lower())
+    l = _resolve_column(ordered, low_col, low_col.lower())
+    c = _resolve_column(ordered, close_col, close_col.lower())
+    v = _resolve_column(ordered, volume_col, volume_col.lower())
 
     out = (
-        df[[o, h, l, c, v]]
-        .sort_index()
+        ordered[[o, h, l, c, v]]
         .resample(rule)
         .agg({
             o: "first",
@@ -57,7 +58,25 @@ def resample_ohlcv(
         })
         .dropna(subset=[c])
     )
+    if exclude_incomplete_last_period and has_incomplete_last_period(
+        ordered.index, rule=rule
+    ):
+        out = out.iloc[:-1]
     return out
+
+
+def has_incomplete_last_period(index: pd.DatetimeIndex, *, rule: str) -> bool:
+    """Return True when the last timestamp is not period-end for ``rule``."""
+    if not isinstance(index, pd.DatetimeIndex):
+        raise ValueError("index must be a DatetimeIndex")
+    if len(index) == 0:
+        return False
+
+    last_ts = index.max()
+    period_end = last_ts.to_period(rule).end_time
+    if period_end.tzinfo is not None:
+        period_end = period_end.tz_localize(None)
+    return last_ts.normalize() < period_end.normalize()
 
 
 def true_range(

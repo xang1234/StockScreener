@@ -68,3 +68,24 @@ def test_policy_benchmark_can_be_required_strictly():
     assert result["status"] == "insufficient"
     assert "insufficient_benchmark_bars" in result["failed_reasons"]
     assert "data_policy:insufficient" in policy_invalidation_flags(result)
+
+
+def test_policy_daily_bar_boundary_251_is_insufficient():
+    result = evaluate_setup_engine_data_policy(
+        daily_bars=251,
+        weekly_bars=80,
+        benchmark_bars=260,
+        current_week_sessions=5,
+    )
+    assert result["status"] == "insufficient"
+    assert "insufficient_daily_bars" in result["failed_reasons"]
+
+
+def test_policy_daily_bar_boundary_252_is_ok():
+    result = evaluate_setup_engine_data_policy(
+        daily_bars=252,
+        weekly_bars=52,
+        benchmark_bars=252,
+        current_week_sessions=5,
+    )
+    assert result["status"] == "ok"

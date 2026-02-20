@@ -32,6 +32,20 @@ from app.analysis.patterns.policy import (
 
 
 @dataclass(frozen=True)
+class DetectorExecutionTrace:
+    """Deterministic execution trace row for one detector call."""
+
+    execution_index: int
+    detector_name: str
+    outcome: str
+    candidate_count: int
+    passed_checks: tuple[str, ...]
+    failed_checks: tuple[str, ...]
+    warnings: tuple[str, ...]
+    error_detail: str | None
+
+
+@dataclass(frozen=True)
 class AggregatedPatternOutput:
     """Normalized detector output consumed by scanner payload assembly."""
 
@@ -46,6 +60,7 @@ class AggregatedPatternOutput:
     key_levels: dict[str, float | None]
     invalidation_flags: tuple[str, ...]
     diagnostics: tuple[str, ...]
+    detector_traces: tuple[DetectorExecutionTrace, ...]
 
 
 class SetupEngineAggregator:
@@ -72,9 +87,22 @@ class SetupEngineAggregator:
         diagnostics: list[str] = []
         invalidation_flags: list[str] = []
         key_levels: dict[str, float | None] = {}
+        detector_traces: list[DetectorExecutionTrace] = []
 
-        for detector in self._detectors:
+        for idx, detector in enumerate(self._detectors):
             result = detector.detect_safe(detector_input, parameters)
+            detector_traces.append(
+                DetectorExecutionTrace(
+                    execution_index=idx,
+                    detector_name=detector.name,
+                    outcome=result.outcome.value,
+                    candidate_count=len(result.candidates),
+                    passed_checks=tuple(result.passed_checks),
+                    failed_checks=tuple(result.failed_checks),
+                    warnings=tuple(result.warnings),
+                    error_detail=result.error_detail,
+                )
+            )
 
             if result.outcome == DetectorOutcome.ERROR:
                 failed_checks.append(
@@ -109,6 +137,8 @@ class SetupEngineAggregator:
 
         if calibration_applied and candidates:
             passed_checks.append("cross_detector_calibration_applied")
+        if detector_traces:
+            passed_checks.append("detector_pipeline_executed")
 
         if primary is None:
             failed_checks.append("no_primary_pattern")
@@ -128,6 +158,7 @@ class SetupEngineAggregator:
             key_levels=key_levels,
             invalidation_flags=tuple(_stable_unique(invalidation_flags)),
             diagnostics=tuple(diagnostics),
+            detector_traces=tuple(detector_traces),
         )
 
 

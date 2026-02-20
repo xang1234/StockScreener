@@ -19,7 +19,10 @@ from app.analysis.patterns.detectors.base import (
 )
 from app.analysis.patterns.models import PatternCandidateModel
 from app.analysis.patterns.normalization import normalize_detector_input_ohlcv
-from app.analysis.patterns.technicals import resample_ohlcv
+from app.analysis.patterns.technicals import (
+    has_incomplete_last_period,
+    resample_ohlcv,
+)
 
 _MIN_WEEKS_TIGHT = 3
 _MAX_WEEKS_TIGHT = 8
@@ -202,7 +205,13 @@ def _resolve_weekly_frame(
         warnings.extend(normalized_daily.warnings)
         if not normalized_daily.prerequisites_ok or normalized_daily.frame is None:
             return None, tuple(warnings)
-        resampled = resample_ohlcv(normalized_daily.frame, rule="W-FRI")
+        if has_incomplete_last_period(normalized_daily.frame.index, rule="W-FRI"):
+            warnings.append("incomplete_current_week_excluded_from_weekly_resample")
+        resampled = resample_ohlcv(
+            normalized_daily.frame,
+            rule="W-FRI",
+            exclude_incomplete_last_period=True,
+        )
         warnings.append("weekly_ohlcv_resampled_from_daily")
         return resampled, tuple(warnings)
 
