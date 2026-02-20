@@ -64,6 +64,16 @@ _PROFILE_BY_DETECTOR: dict[str, DetectorCalibrationProfile] = {
         confidence_max=0.95,
         confidence_bias=0.03,
     ),
+    "cup_with_handle": DetectorCalibrationProfile(
+        quality_min=45.0,
+        quality_max=95.0,
+        readiness_min=45.0,
+        readiness_max=95.0,
+        confidence_min=0.30,
+        confidence_max=0.95,
+        confidence_bias=0.02,
+    ),
+    # Backward-compat alias used in older docs/tests.
     "cup_handle": DetectorCalibrationProfile(
         quality_min=45.0,
         quality_max=95.0,
@@ -131,27 +141,27 @@ def calibrate_candidate_scores(candidate: PatternCandidate) -> PatternCandidate:
         raw_confidence, profile.confidence_min, profile.confidence_max
     )
 
-    if quality_norm is None:
-        quality_norm = _mean_defined((confidence_norm, readiness_norm), default=0.5)
-    if readiness_norm is None:
-        readiness_norm = _mean_defined((quality_norm, confidence_norm), default=0.5)
-    if confidence_norm is None:
-        confidence_norm = _mean_defined((quality_norm, readiness_norm), default=0.5)
-
-    calibrated_quality = round(_clamp(quality_norm * 100.0, 0.0, 100.0), 6)
-    calibrated_readiness = round(_clamp(readiness_norm * 100.0, 0.0, 100.0), 6)
-    calibrated_confidence = round(
-        _clamp(
-            confidence_norm * 0.55
-            + quality_norm * 0.25
-            + readiness_norm * 0.20
-            + profile.confidence_bias,
-            0.05,
-            0.95,
-        ),
-        6,
+    calibrated_quality = (
+        round(_clamp(quality_norm * 100.0, 0.0, 100.0), 6)
+        if quality_norm is not None
+        else None
     )
-    calibrated_confidence_pct = round(calibrated_confidence * 100.0, 6)
+    calibrated_readiness = (
+        round(_clamp(readiness_norm * 100.0, 0.0, 100.0), 6)
+        if readiness_norm is not None
+        else None
+    )
+    calibrated_confidence = _calibrate_confidence(
+        confidence_norm=confidence_norm,
+        quality_norm=quality_norm,
+        readiness_norm=readiness_norm,
+        confidence_bias=profile.confidence_bias,
+    )
+    calibrated_confidence_pct = (
+        round(calibrated_confidence * 100.0, 6)
+        if calibrated_confidence is not None
+        else None
+    )
     rank_score = round(
         _aggregation_rank_score_from_parts(
             confidence=calibrated_confidence,
@@ -180,9 +190,9 @@ def calibrate_candidate_scores(candidate: PatternCandidate) -> PatternCandidate:
                 if raw_confidence is not None
                 else None
             ),
-            "normalized_quality_score_0_1": round(quality_norm, 6),
-            "normalized_readiness_score_0_1": round(readiness_norm, 6),
-            "normalized_confidence_0_1": round(confidence_norm, 6),
+            "normalized_quality_score_0_1": _round_or_none(quality_norm),
+            "normalized_readiness_score_0_1": _round_or_none(readiness_norm),
+            "normalized_confidence_0_1": _round_or_none(confidence_norm),
             "calibrated_quality_score": calibrated_quality,
             "calibrated_readiness_score": calibrated_readiness,
             "calibrated_confidence": calibrated_confidence,
@@ -232,6 +242,21 @@ def _aggregation_rank_score_from_parts(
     )
 
 
+def _calibrate_confidence(
+    *,
+    confidence_norm: float | None,
+    quality_norm: float | None,
+    readiness_norm: float | None,
+    confidence_bias: float,
+) -> float | None:
+    weighted_norm = _weighted_mean_defined(
+        ((confidence_norm, 0.55), (quality_norm, 0.25), (readiness_norm, 0.20))
+    )
+    if weighted_norm is None:
+        return None
+    return round(_clamp(weighted_norm + confidence_bias, 0.05, 0.95), 6)
+
+
 def _extract_confidence(candidate: PatternCandidate) -> float | None:
     confidence = _as_float(candidate.get("confidence"))
     if confidence is not None:
@@ -251,11 +276,19 @@ def _normalize(value: float | None, lower: float, upper: float) -> float | None:
     return _clamp((value - lower) / (upper - lower), 0.0, 1.0)
 
 
-def _mean_defined(values: Sequence[float | None], *, default: float) -> float:
-    present = [value for value in values if value is not None]
-    if not present:
-        return default
-    return sum(present) / float(len(present))
+def _weighted_mean_defined(
+    values: Sequence[tuple[float | None, float]],
+) -> float | None:
+    total = 0.0
+    total_weight = 0.0
+    for value, weight in values:
+        if value is None:
+            continue
+        total += value * weight
+        total_weight += weight
+    if total_weight <= 0.0:
+        return None
+    return total / total_weight
 
 
 def _as_float(value: object) -> float | None:

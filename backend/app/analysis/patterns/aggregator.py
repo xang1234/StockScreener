@@ -94,8 +94,7 @@ class SetupEngineAggregator:
             candidates.extend(result.candidates)
 
         calibrated_candidates = list(calibrate_candidates_for_aggregation(candidates))
-        if calibrated_candidates:
-            passed_checks.append("cross_detector_calibration_applied")
+        calibration_applied = bool(calibrated_candidates)
         candidates = calibrated_candidates
 
         primary = _pick_primary_candidate(candidates)
@@ -106,6 +105,10 @@ class SetupEngineAggregator:
             if policy_result["status"] == "insufficient":
                 candidates = []
                 primary = None
+                calibration_applied = False
+
+        if calibration_applied and candidates:
+            passed_checks.append("cross_detector_calibration_applied")
 
         if primary is None:
             failed_checks.append("no_primary_pattern")
