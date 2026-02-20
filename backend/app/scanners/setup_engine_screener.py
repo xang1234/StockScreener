@@ -227,7 +227,7 @@ class SetupEngineScanner(BaseStockScreener):
 
         # Scanner-level timing breakdown at INFO (1 line per symbol)
         error_count = sum(1 for t in agg_output.detector_traces if t.outcome == "error")
-        no_data_count = sum(1 for t in agg_output.detector_traces if t.outcome == "no_data")
+        no_data_count = sum(1 for t in agg_output.detector_traces if t.outcome == "insufficient_data")
         logger.info(
             "SE timing %s: prep=%.1fms detectors=%.1fms readiness=%.1fms total=%.1fms "
             "score=%s errors=%d no_data=%d",
