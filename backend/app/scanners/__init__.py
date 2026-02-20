@@ -17,6 +17,7 @@ from .canslim_scanner import CANSLIMScanner
 from .ipo_scanner import IPOScanner
 from .custom_scanner import CustomScanner
 from .volume_breakthrough_scanner import VolumeBreakthroughScanner
+from .setup_engine_screener import SetupEngineScanner
 
 
 __all__ = [
@@ -38,4 +39,5 @@ __all__ = [
     'IPOScanner',
     'CustomScanner',
     'VolumeBreakthroughScanner',
+    'SetupEngineScanner',
 ]

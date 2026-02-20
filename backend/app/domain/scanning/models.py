@@ -27,6 +27,7 @@ class ScreenerName(str, Enum):
     IPO = "ipo"
     CUSTOM = "custom"
     VOLUME_BREAKTHROUGH = "volume_breakthrough"
+    SETUP_ENGINE = "setup_engine"
 
 
 class CompositeMethod(str, Enum):
