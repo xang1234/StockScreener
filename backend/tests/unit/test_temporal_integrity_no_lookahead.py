@@ -78,3 +78,31 @@ def test_weekly_resample_can_exclude_incomplete_current_week():
 
     assert len(without_incomplete) + 1 == len(with_incomplete)
     assert without_incomplete.index.max() < with_incomplete.index.max()
+
+
+def test_holiday_shortened_week_is_not_marked_incomplete():
+    idx = pd.DatetimeIndex(
+        ["2025-04-14", "2025-04-15", "2025-04-16", "2025-04-17"]
+    )
+    daily = _sample_ohlcv_daily(length=4).copy()
+    daily.index = idx
+
+    assert has_incomplete_last_period(idx, rule="W-FRI", exchange="NYSE") is False
+    assert has_incomplete_last_period(idx, rule="W-FRI", exchange="NASDAQ") is False
+
+    with_last = resample_ohlcv(daily, rule="W-FRI")
+    without_last = resample_ohlcv(
+        daily,
+        rule="W-FRI",
+        exclude_incomplete_last_period=True,
+        exchange="NYSE",
+    )
+    assert len(with_last) == len(without_last)
+
+
+def test_incomplete_period_check_handles_tz_aware_index():
+    idx = pd.DatetimeIndex(
+        ["2025-02-03 00:00:00", "2025-02-04 00:00:00", "2025-02-05 00:00:00"],
+        tz="US/Eastern",
+    )
+    assert has_incomplete_last_period(idx, rule="W-FRI", exchange="NYSE") is True

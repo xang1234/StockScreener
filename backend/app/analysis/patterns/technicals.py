@@ -6,10 +6,12 @@ All helpers are pure, deterministic, and assume chronological input
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Literal
 
 import numpy as np
 import pandas as pd
+import pandas_market_calendars as mcal
 
 
 def _require_datetime_index(df: pd.DataFrame) -> None:
@@ -30,6 +32,7 @@ def resample_ohlcv(
     *,
     rule: str = "W-FRI",
     exclude_incomplete_last_period: bool = False,
+    exchange: str = "NYSE",
     open_col: str = "Open",
     high_col: str = "High",
     low_col: str = "Low",
@@ -59,24 +62,66 @@ def resample_ohlcv(
         .dropna(subset=[c])
     )
     if exclude_incomplete_last_period and has_incomplete_last_period(
-        ordered.index, rule=rule
+        ordered.index,
+        rule=rule,
+        exchange=exchange,
     ):
         out = out.iloc[:-1]
     return out
 
 
-def has_incomplete_last_period(index: pd.DatetimeIndex, *, rule: str) -> bool:
-    """Return True when the last timestamp is not period-end for ``rule``."""
+def has_incomplete_last_period(
+    index: pd.DatetimeIndex,
+    *,
+    rule: str,
+    exchange: str = "NYSE",
+) -> bool:
+    """Return True when latest bar is before the last scheduled session in period."""
     if not isinstance(index, pd.DatetimeIndex):
         raise ValueError("index must be a DatetimeIndex")
     if len(index) == 0:
         return False
 
-    last_ts = index.max()
+    normalized_index = _to_utc_naive(index)
+    last_ts = normalized_index.max()
+
+    # Exchange-aware path for weekly bars prevents false "incomplete" flags on
+    # holiday-shortened weeks where Friday has no trading session.
+    if str(rule).startswith("W-"):
+        period = last_ts.to_period(rule)
+        period_start = period.start_time.normalize()
+        period_end = period.end_time.normalize()
+        schedule = _get_exchange_calendar(exchange).schedule(
+            start_date=period_start.date().isoformat(),
+            end_date=period_end.date().isoformat(),
+        )
+        if not schedule.empty:
+            scheduled_dates = _to_utc_naive(pd.DatetimeIndex(schedule.index))
+            expected_last_session = scheduled_dates.max().normalize()
+            return last_ts.normalize() < expected_last_session
+
+        # Defensive fallback when schedule is unexpectedly empty.
+        return last_ts.normalize() < period_end
+
     period_end = last_ts.to_period(rule).end_time
     if period_end.tzinfo is not None:
-        period_end = period_end.tz_localize(None)
+        period_end = period_end.tz_convert("UTC").tz_localize(None)
     return last_ts.normalize() < period_end.normalize()
+
+
+@lru_cache(maxsize=4)
+def _get_exchange_calendar(exchange: str):
+    exchange_name = str(exchange).upper()
+    try:
+        return mcal.get_calendar(exchange_name)
+    except Exception as exc:  # pragma: no cover - defensive bad input path
+        raise ValueError(f"Unsupported exchange calendar: {exchange}") from exc
+
+
+def _to_utc_naive(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    if index.tz is None:
+        return index
+    return index.tz_convert("UTC").tz_localize(None)
 
 
 def true_range(
