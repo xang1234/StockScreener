@@ -329,6 +329,49 @@ def test_nr7_inside_day_returns_not_detected_when_no_trigger():
     assert "nr7_inside_day_trigger_not_found" in result.failed_checks
 
 
+def test_nr7_inside_day_requires_minimum_7_bars():
+    index = pd.bdate_range("2025-01-02", periods=6)
+    close = np.linspace(100.0, 102.0, len(index))
+    frame = _ohlcv_frame(index=index, close=close)
+    detector_input = PatternDetectorInput(
+        symbol="NR7",
+        timeframe="daily",
+        daily_bars=len(frame),
+        weekly_bars=60,
+        features={"daily_ohlcv": frame},
+    )
+
+    result = NR7InsideDayDetector().detect_safe(
+        detector_input, DEFAULT_SETUP_ENGINE_PARAMETERS
+    )
+    assert result.outcome == DetectorOutcome.INSUFFICIENT_DATA
+    assert "daily_bars_lt_7" in result.failed_checks
+
+
+def test_nr7_inside_day_volume_ratio_uses_prior_bars_only():
+    frame = _nr7_inside_day_frame(force_nr7=True, force_inside_day=True)
+    trigger_idx = len(frame) - 1
+    volume_col = frame.columns.get_loc("Volume")
+    frame.iloc[trigger_idx - 20 : trigger_idx, volume_col] = 100.0
+    frame.iloc[trigger_idx, volume_col] = 105.2
+    detector_input = PatternDetectorInput(
+        symbol="NR7",
+        timeframe="daily",
+        daily_bars=len(frame),
+        weekly_bars=60,
+        features={"daily_ohlcv": frame},
+    )
+
+    result = NR7InsideDayDetector().detect_safe(
+        detector_input, DEFAULT_SETUP_ENGINE_PARAMETERS
+    )
+    assert result.outcome == DetectorOutcome.DETECTED
+    best = result.candidates[0]
+    assert best["metrics"]["trigger_recency_bars"] == 0
+    assert best["metrics"]["volume_ratio_20d"] > 1.05
+    assert best["checks"]["volume_not_expanded"] is False
+
+
 def test_high_tight_flag_returns_flag_validated_candidate():
     index = pd.bdate_range("2025-01-02", periods=220)
     close = np.concatenate(

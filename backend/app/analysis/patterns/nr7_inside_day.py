@@ -62,7 +62,7 @@ class NR7InsideDayDetector(PatternDetector):
         normalized = normalize_detector_input_ohlcv(
             features=detector_input.features,
             timeframe="daily",
-            min_bars=10,
+            min_bars=_NR7_LOOKBACK_BARS,
             feature_key="daily_ohlcv",
             fallback_bar_count=detector_input.daily_bars,
         )
@@ -79,13 +79,6 @@ class NR7InsideDayDetector(PatternDetector):
             )
 
         frame = normalized.frame
-        if len(frame) < _NR7_LOOKBACK_BARS:
-            return PatternDetectorResult.no_detection(
-                self.name,
-                failed_checks=("nr7_window_insufficient",),
-                warnings=normalized.warnings,
-            )
-
         high = frame["High"]
         low = frame["Low"]
         close = frame["Close"]
@@ -131,7 +124,12 @@ class NR7InsideDayDetector(PatternDetector):
                 (range_window <= (trigger_range_points + 1e-9)).sum()
             )
             trigger_volume = float(volume.iat[idx])
-            volume_mean_20d = float(volume.iloc[max(0, idx - 19) : idx + 1].mean())
+            prior_volume_window = volume.iloc[max(0, idx - 20) : idx]
+            volume_mean_20d = (
+                float(prior_volume_window.mean())
+                if not prior_volume_window.empty
+                else float("nan")
+            )
             if volume_mean_20d <= 0.0 or pd.isna(volume_mean_20d):
                 volume_ratio_20d = 1.0
             else:
