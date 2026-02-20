@@ -14,7 +14,7 @@ import apiClient from './client';
  * @param {string} [params.universe_def.index] - Index name: 'SP500' (if type='index')
  * @param {Array<string>} [params.universe_def.symbols] - Symbol list (if type='custom' or 'test')
  * @param {Object} params.criteria - Scan criteria
- * @param {Array<string>} params.screeners - Screeners to run: ['minervini', 'canslim', 'ipo', 'custom', 'volume_breakthrough']
+ * @param {Array<string>} params.screeners - Screeners to run: ['minervini', 'canslim', 'ipo', 'custom', 'volume_breakthrough', 'setup_engine']
  * @param {string} params.composite_method - How to combine scores: 'weighted_average', 'maximum', 'minimum'
  * @returns {Promise<Object>} Scan creation response with scan_id
  */

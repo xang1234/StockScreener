@@ -38,7 +38,7 @@ class ScanCreateRequest(BaseModel):
     # Multi-screener fields
     screeners: List[str] = Field(
         default=["minervini"],
-        description="Screeners to run: minervini, canslim, ipo, custom, volume_breakthrough",
+        description="Screeners to run: minervini, canslim, ipo, custom, volume_breakthrough, setup_engine",
     )
     composite_method: str = Field(
         default="weighted_average",

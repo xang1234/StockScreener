@@ -58,7 +58,7 @@ function ScanPage() {
   const [includeVcp, setIncludeVcp] = useState(true);
 
   // Multi-screener options
-  const [selectedScreeners, setSelectedScreeners] = useState(['minervini', 'canslim', 'ipo', 'custom', 'volume_breakthrough']);
+  const [selectedScreeners, setSelectedScreeners] = useState(['minervini', 'canslim', 'ipo', 'custom', 'volume_breakthrough', 'setup_engine']);
   const [compositeMethod, setCompositeMethod] = useState('weighted_average');
 
   // Custom screener filters
@@ -767,6 +767,7 @@ function ScanPage() {
               { id: 'ipo', label: 'IPO' },
               { id: 'custom', label: 'Cust' },
               { id: 'volume_breakthrough', label: 'VolB' },
+              { id: 'setup_engine', label: 'Setup' },
             ].map((screener) => (
               <Chip
                 key={screener.id}
