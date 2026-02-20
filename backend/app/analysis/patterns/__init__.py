@@ -27,6 +27,11 @@ from .normalization import (
     normalize_ohlcv_frame,
 )
 from .nr7_inside_day import NR7InsideDayDetector
+from .explain_builder import (
+    ExplainBuilderInput,
+    ExplainResult,
+    build_explain_payload,
+)
 from .report import (
     ExplainPayload,
     InvalidationFlag,
@@ -83,6 +88,9 @@ __all__ = [
     "CupHandleDetector",
     "NR7InsideDayDetector",
     "FirstPullbackDetector",
+    "ExplainBuilderInput",
+    "ExplainResult",
+    "build_explain_payload",
     "SetupEngineReport",
     "ExplainPayload",
     "KeyLevels",

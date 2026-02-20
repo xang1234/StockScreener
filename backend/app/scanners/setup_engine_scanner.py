@@ -22,13 +22,13 @@ from app.analysis.patterns.models import (
     PatternCandidate,
     PatternCandidateModel,
     coerce_pattern_candidate,
-    SetupEngineExplain,
     SetupEnginePayload,
     assert_valid_setup_engine_payload,
     is_snake_case,
     normalize_iso_date,
 )
 from app.analysis.patterns.report import (
+    KeyLevels,
     SetupEngineReport,
     assert_valid_setup_engine_report_payload,
 )
@@ -42,7 +42,10 @@ from app.analysis.patterns.readiness import (
     BreakoutReadinessTraceInputs,
     readiness_features_to_payload_fields,
 )
-from app.analysis.patterns.trace import build_score_trace
+from app.analysis.patterns.explain_builder import (
+    ExplainBuilderInput,
+    build_explain_payload,
+)
 
 
 def _to_float(value: Any) -> float | None:
@@ -319,108 +322,33 @@ def build_setup_engine_payload(
             6,
         )
 
-    # ── Readiness gate evaluation ──────────────────────
-    # Normalize context-relevant floats before gate checks.
+    # ── Readiness gate evaluation via explain builder ──
     norm_distance = _to_float(distance_to_pivot_pct)
     norm_atr14 = _to_float(atr14_pct)
     norm_volume = _to_float(volume_vs_50d)
     norm_rs_vs_spy = _to_float(rs_vs_spy_65d)
 
-    if normalized_setup_score is None:
-        # Insufficient data: skip all context gates, force not ready.
-        derived_ready = False
-    else:
-        # Gate 1: setup_score threshold
-        if normalized_setup_score >= parameters.setup_score_min_pct:
-            normalized_passed.append("setup_score_ok")
-        else:
-            normalized_failed.append("setup_score_below_threshold")
-
-        # Gate 2: quality floor
-        if normalized_quality_score is not None and normalized_quality_score >= parameters.quality_score_min_pct:
-            normalized_passed.append("quality_floor_ok")
-        else:
-            normalized_failed.append("quality_below_threshold")
-
-        # Gate 3: readiness floor
-        if normalized_readiness_score is not None and normalized_readiness_score >= threshold_pct:
-            normalized_passed.append("readiness_floor_ok")
-        else:
-            normalized_failed.append("readiness_below_threshold")
-
-        # Gate 4: early zone
-        if norm_distance is not None:
-            if (
-                parameters.early_zone_distance_to_pivot_pct_min
-                <= norm_distance
-                <= parameters.early_zone_distance_to_pivot_pct_max
-            ):
-                normalized_passed.append("in_early_zone")
-            else:
-                normalized_failed.append("outside_early_zone")
-        else:
-            normalized_failed.append("outside_early_zone")
-
-        # Gate 5: ATR14 cap (permissive when None)
-        if norm_atr14 is not None:
-            if norm_atr14 <= parameters.atr14_pct_max_for_ready:
-                normalized_passed.append("atr14_within_limit")
-            else:
-                normalized_failed.append("atr14_pct_exceeds_limit")
-        else:
-            normalized_passed.append("atr14_within_limit")
-
-        # Gate 6: Volume floor (permissive when None)
-        if norm_volume is not None:
-            if norm_volume >= parameters.volume_vs_50d_min_for_ready:
-                normalized_passed.append("volume_sufficient")
-            else:
-                normalized_failed.append("volume_below_minimum")
-        else:
-            normalized_passed.append("volume_sufficient")
-
-        # Gate 7: RS leadership (permissive when both None)
-        rs_line_high = bool(rs_line_new_high) if rs_line_new_high is not None else False
-        if norm_rs_vs_spy is not None or rs_line_high:
-            rs_ok = (norm_rs_vs_spy is not None and norm_rs_vs_spy > 0) or rs_line_high
-            if rs_ok:
-                normalized_passed.append("rs_leadership_ok")
-            else:
-                normalized_failed.append("rs_leadership_insufficient")
-        else:
-            # Both unavailable → permissive
-            normalized_passed.append("rs_leadership_ok")
-
-        # Gate 8: Stage OK (from primary candidate checks)
-        if extracted_stage_ok:
-            normalized_passed.append("stage_ok")
-        else:
-            normalized_failed.append("stage_not_ok")
-
-        # derived_ready = all gates passed (no new failures from gates)
-        derived_ready = len(normalized_failed) == 0
-
-    explain: SetupEngineExplain = {
-        "passed_checks": normalized_passed,
-        "failed_checks": normalized_failed,
-        "key_levels": _normalize_key_levels(key_levels),
-        "invalidation_flags": normalized_flags,
-    }
-
-    # ── Optional score trace ──────────────────────
-    if (
-        include_score_trace
-        and readiness_trace_inputs is not None
-        and normalized_readiness is not None
-    ):
-        score_trace = build_score_trace(
-            normalized_readiness,
-            readiness_trace_inputs,
-            quality_score=normalized_quality_score,
-            readiness_score=normalized_readiness_score,
-            setup_score=normalized_setup_score,
-        )
-        explain["score_trace"] = score_trace  # type: ignore[typeddict-unknown-key]
+    explain_input = ExplainBuilderInput(
+        pre_existing_passed_checks=tuple(normalized_passed),
+        pre_existing_failed_checks=tuple(normalized_failed),
+        key_levels=KeyLevels(levels=_normalize_key_levels(key_levels)),
+        pre_existing_invalidation_flags=tuple(normalized_flags),
+        setup_score=normalized_setup_score,
+        quality_score=normalized_quality_score,
+        readiness_score=normalized_readiness_score,
+        distance_to_pivot_pct=norm_distance,
+        atr14_pct=norm_atr14,
+        volume_vs_50d=norm_volume,
+        rs_vs_spy_65d=norm_rs_vs_spy,
+        rs_line_new_high=bool(rs_line_new_high) if rs_line_new_high is not None else False,
+        stage_ok=extracted_stage_ok,
+        parameters=parameters,
+        readiness_threshold_pct=threshold_pct,
+        include_score_trace=include_score_trace,
+        readiness_features=normalized_readiness,
+        readiness_trace_inputs=readiness_trace_inputs,
+    )
+    explain_result = build_explain_payload(explain_input)
 
     payload: SetupEnginePayload = {
         "schema_version": schema_version,
@@ -428,7 +356,7 @@ def build_setup_engine_payload(
         "setup_score": normalized_setup_score,
         "quality_score": normalized_quality_score,
         "readiness_score": normalized_readiness_score,
-        "setup_ready": bool(setup_ready) if setup_ready is not None else derived_ready,
+        "setup_ready": bool(setup_ready) if setup_ready is not None else explain_result.derived_ready,
         "pattern_primary": pattern_primary,
         "pattern_confidence": _to_float(pattern_confidence),
         "pivot_price": _to_float(pivot_price),
@@ -448,7 +376,7 @@ def build_setup_engine_payload(
             candidates,
             default_timeframe=timeframe,
         ),
-        "explain": explain,
+        "explain": explain_result.explain.to_payload(),
     }
 
     assert_valid_setup_engine_payload(payload)
