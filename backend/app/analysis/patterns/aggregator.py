@@ -1,6 +1,5 @@
 """Pattern aggregation entrypoint for Setup Engine analysis layer.
 
-TODO(SE-C7): Add cross-detector confidence calibration and tie-breaking policy.
 TODO(SE-B7): Emit typed SetupEngineReport-compatible aggregation output.
 """
 
@@ -9,6 +8,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
+from app.analysis.patterns.calibration import (
+    aggregation_rank_score,
+    calibrate_candidates_for_aggregation,
+)
 from app.analysis.patterns.config import (
     DEFAULT_SETUP_ENGINE_PARAMETERS,
     SetupEngineParameters,
@@ -90,6 +93,11 @@ class SetupEngineAggregator:
             # Candidates are already coerced by detect_safe().
             candidates.extend(result.candidates)
 
+        calibrated_candidates = list(calibrate_candidates_for_aggregation(candidates))
+        if calibrated_candidates:
+            passed_checks.append("cross_detector_calibration_applied")
+        candidates = calibrated_candidates
+
         primary = _pick_primary_candidate(candidates)
 
         if policy_result is not None:
@@ -132,7 +140,32 @@ def _pick_primary_candidate(candidates: Sequence[PatternCandidate]) -> PatternCa
             return float("-inf")
         return float(raw)
 
-    return max(candidates, key=_confidence)
+    def _distance_score(candidate: PatternCandidate) -> float:
+        distance = candidate.get("distance_to_pivot_pct")
+        if distance is None:
+            return float("-inf")
+        return -abs(float(distance))
+
+    def _score(candidate: PatternCandidate) -> tuple[float, float, float, float]:
+        confidence = _confidence(candidate)
+        quality = (
+            float(candidate.get("quality_score"))
+            if candidate.get("quality_score") is not None
+            else float("-inf")
+        )
+        readiness = (
+            float(candidate.get("readiness_score"))
+            if candidate.get("readiness_score") is not None
+            else float("-inf")
+        )
+        return (
+            aggregation_rank_score(candidate),
+            confidence,
+            readiness + quality,
+            _distance_score(candidate),
+        )
+
+    return max(candidates, key=_score)
 
 
 def _stable_unique(values: Sequence[str]) -> list[str]:

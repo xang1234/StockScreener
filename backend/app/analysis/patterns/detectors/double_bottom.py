@@ -2,8 +2,6 @@
 
 Expected input orientation:
 - Weekly or daily features in chronological order (oldest -> newest).
-
-TODO(SE-C7): Calibrate and normalize double-bottom confidence against other families.
 """
 
 from __future__ import annotations
