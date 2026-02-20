@@ -239,7 +239,7 @@ SETUP_ENGINE_FIELD_SPECS: tuple[SetupEngineFieldSpec, ...] = (
         nullable=True,
         unit="pct",
         source_module="backend/app/scanners/setup_engine_scanner.py",
-        description="Overall setup quality score on 0..100 scale.",
+        description="Composite setup quality score (0.60*quality + 0.40*readiness). Per-candidate setup_score uses a different blend including confidence.",
     ),
     SetupEngineFieldSpec(
         name="quality_score",

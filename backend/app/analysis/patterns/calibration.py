@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
+from app.analysis.patterns.config import CANDIDATE_SETUP_SCORE_WEIGHTS
 from app.analysis.patterns.models import PatternCandidate
 
 
@@ -171,11 +172,26 @@ def calibrate_candidate_scores(candidate: PatternCandidate) -> PatternCandidate:
         6,
     )
 
+    # Per-candidate setup_score synthesis.
+    wq, wr, wc = CANDIDATE_SETUP_SCORE_WEIGHTS
+    if calibrated_quality is not None and calibrated_readiness is not None and calibrated_confidence is not None:
+        candidate_setup_score = round(
+            _clamp(
+                wq * calibrated_quality + wr * calibrated_readiness + wc * (calibrated_confidence * 100.0),
+                0.0,
+                100.0,
+            ),
+            6,
+        )
+    else:
+        candidate_setup_score = None
+
     output: PatternCandidate = dict(candidate)
     output["quality_score"] = calibrated_quality
     output["readiness_score"] = calibrated_readiness
     output["confidence"] = calibrated_confidence
     output["confidence_pct"] = calibrated_confidence_pct
+    output["setup_score"] = candidate_setup_score
 
     metrics = dict(output.get("metrics") or {})
     metrics.update(
@@ -198,6 +214,8 @@ def calibrate_candidate_scores(candidate: PatternCandidate) -> PatternCandidate:
             "calibrated_confidence": calibrated_confidence,
             "calibrated_confidence_pct": calibrated_confidence_pct,
             "aggregation_rank_score": rank_score,
+            "candidate_setup_score": candidate_setup_score,
+            "setup_score_method": "candidate_blend_v1",
         }
     )
     output["metrics"] = metrics

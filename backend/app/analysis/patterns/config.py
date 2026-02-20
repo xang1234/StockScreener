@@ -11,6 +11,12 @@ from typing import Mapping
 
 from app.analysis.patterns.models import SETUP_ENGINE_NUMERIC_UNITS
 
+# ── Setup Score Synthesis Weights ─────────────────
+# Per-candidate: includes confidence for cross-candidate comparison.
+CANDIDATE_SETUP_SCORE_WEIGHTS: tuple[float, float, float] = (0.55, 0.35, 0.10)
+# Top-level: quality/readiness only (confidence exercised via primary selection).
+SETUP_SCORE_WEIGHTS: tuple[float, float] = (0.60, 0.40)
+
 
 @dataclass(frozen=True)
 class SetupEngineParameterSpec:
@@ -49,6 +55,9 @@ class SetupEngineParameters:
     # Supplemental readiness controls.
     atr14_pct_max_for_ready: float = 8.0
     volume_vs_50d_min_for_ready: float = 1.0
+
+    # Composite setup score gate.
+    setup_score_min_pct: float = 65.0
 
 
 SETUP_ENGINE_PARAMETER_SPECS: tuple[SetupEngineParameterSpec, ...] = (
@@ -150,6 +159,15 @@ SETUP_ENGINE_PARAMETER_SPECS: tuple[SetupEngineParameterSpec, ...] = (
         unit="ratio",
         profile="baseline",
         rationale="Requires at least baseline liquidity participation at decision time.",
+    ),
+    SetupEngineParameterSpec(
+        name="setup_score_min_pct",
+        default_value=65.0,
+        min_value=30.0,
+        max_value=95.0,
+        unit="pct",
+        profile="baseline",
+        rationale="Minimum composite setup score combining quality and readiness to enable setup_ready classification.",
     ),
 )
 

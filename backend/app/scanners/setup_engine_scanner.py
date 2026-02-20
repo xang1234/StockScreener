@@ -12,6 +12,7 @@ from typing import Any, Mapping, Sequence, cast
 
 from app.analysis.patterns.config import (
     DEFAULT_SETUP_ENGINE_PARAMETERS,
+    SETUP_SCORE_WEIGHTS,
     SetupEngineParameters,
     assert_valid_setup_engine_parameters,
 )
@@ -122,6 +123,34 @@ def _coerce_readiness_features(
     )
 
 
+def _extract_primary_candidate_scores(
+    candidates: Sequence[Mapping[str, Any] | Any],
+    pattern_primary: str,
+) -> tuple[float | None, float | None, float | None, bool]:
+    """Extract calibrated scores from the candidate matching pattern_primary.
+
+    Returns (quality_score, readiness_score, confidence, stage_ok).
+    Falls back to (None, None, None, True) when no match is found.
+    """
+    for candidate in candidates:
+        mapping: Mapping[str, Any] = (
+            candidate if isinstance(candidate, Mapping) else {}
+        )
+        if mapping.get("pattern") == pattern_primary:
+            quality = mapping.get("quality_score")
+            readiness = mapping.get("readiness_score")
+            confidence = mapping.get("confidence")
+            checks = mapping.get("checks") or {}
+            stage_ok = checks.get("stage_ok", True)
+            return (
+                float(quality) if quality is not None and not isinstance(quality, bool) else None,
+                float(readiness) if readiness is not None and not isinstance(readiness, bool) else None,
+                float(confidence) if confidence is not None and not isinstance(confidence, bool) else None,
+                bool(stage_ok),
+            )
+    return (None, None, None, True)
+
+
 def build_setup_engine_payload(
     *,
     setup_score: int | float | None = None,
@@ -189,6 +218,23 @@ def build_setup_engine_payload(
     normalized_setup_score = _to_float(setup_score)
     normalized_quality_score = _to_float(quality_score)
     normalized_readiness_score = _to_float(readiness_score)
+
+    # Primary candidate extraction: fill quality/readiness/confidence fallbacks.
+    extracted_stage_ok = True
+    extracted_confidence: float | None = None
+    if (normalized_quality_score is None or normalized_readiness_score is None) and candidates and pattern_primary:
+        ext_q, ext_r, ext_c, extracted_stage_ok = _extract_primary_candidate_scores(
+            candidates, pattern_primary,
+        )
+        if normalized_quality_score is None:
+            normalized_quality_score = ext_q
+        if normalized_readiness_score is None:
+            normalized_readiness_score = ext_r
+        extracted_confidence = ext_c
+    elif candidates and pattern_primary:
+        _, _, _, extracted_stage_ok = _extract_primary_candidate_scores(
+            candidates, pattern_primary,
+        )
 
     normalized_readiness = _coerce_readiness_features(readiness_features)
     if normalized_readiness is not None:
@@ -261,11 +307,94 @@ def build_setup_engine_payload(
             rs_vs_spy_65d = None
             rs_vs_spy_trend_20d = None
 
-    derived_ready = (
-        (normalized_readiness_score is not None)
-        and (normalized_readiness_score >= threshold_pct)
-        and (len(normalized_failed) == 0)
-    )
+    # ── Setup score synthesis ─────────────────────────
+    if normalized_setup_score is None and normalized_quality_score is not None and normalized_readiness_score is not None:
+        wq, wr = SETUP_SCORE_WEIGHTS
+        normalized_setup_score = round(
+            min(100.0, max(0.0, wq * normalized_quality_score + wr * normalized_readiness_score)),
+            6,
+        )
+
+    # ── Readiness gate evaluation ──────────────────────
+    # Normalize context-relevant floats before gate checks.
+    norm_distance = _to_float(distance_to_pivot_pct)
+    norm_atr14 = _to_float(atr14_pct)
+    norm_volume = _to_float(volume_vs_50d)
+    norm_rs_vs_spy = _to_float(rs_vs_spy_65d)
+
+    if normalized_setup_score is None:
+        # Insufficient data: skip all context gates, force not ready.
+        derived_ready = False
+    else:
+        # Gate 1: setup_score threshold
+        if normalized_setup_score >= parameters.setup_score_min_pct:
+            normalized_passed.append("setup_score_ok")
+        else:
+            normalized_failed.append("setup_score_below_threshold")
+
+        # Gate 2: quality floor
+        if normalized_quality_score is not None and normalized_quality_score >= parameters.quality_score_min_pct:
+            normalized_passed.append("quality_floor_ok")
+        else:
+            normalized_failed.append("quality_below_threshold")
+
+        # Gate 3: readiness floor
+        if normalized_readiness_score is not None and normalized_readiness_score >= threshold_pct:
+            normalized_passed.append("readiness_floor_ok")
+        else:
+            normalized_failed.append("readiness_below_threshold")
+
+        # Gate 4: early zone
+        if norm_distance is not None:
+            if (
+                parameters.early_zone_distance_to_pivot_pct_min
+                <= norm_distance
+                <= parameters.early_zone_distance_to_pivot_pct_max
+            ):
+                normalized_passed.append("in_early_zone")
+            else:
+                normalized_failed.append("outside_early_zone")
+        else:
+            normalized_failed.append("outside_early_zone")
+
+        # Gate 5: ATR14 cap (permissive when None)
+        if norm_atr14 is not None:
+            if norm_atr14 <= parameters.atr14_pct_max_for_ready:
+                normalized_passed.append("atr14_within_limit")
+            else:
+                normalized_failed.append("atr14_pct_exceeds_limit")
+        else:
+            normalized_passed.append("atr14_within_limit")
+
+        # Gate 6: Volume floor (permissive when None)
+        if norm_volume is not None:
+            if norm_volume >= parameters.volume_vs_50d_min_for_ready:
+                normalized_passed.append("volume_sufficient")
+            else:
+                normalized_failed.append("volume_below_minimum")
+        else:
+            normalized_passed.append("volume_sufficient")
+
+        # Gate 7: RS leadership (permissive when both None)
+        rs_line_high = bool(rs_line_new_high) if rs_line_new_high is not None else False
+        if norm_rs_vs_spy is not None or rs_line_high:
+            rs_ok = (norm_rs_vs_spy is not None and norm_rs_vs_spy > 0) or rs_line_high
+            if rs_ok:
+                normalized_passed.append("rs_leadership_ok")
+            else:
+                normalized_failed.append("rs_leadership_insufficient")
+        else:
+            # Both unavailable → permissive
+            normalized_passed.append("rs_leadership_ok")
+
+        # Gate 8: Stage OK (from primary candidate checks)
+        if extracted_stage_ok:
+            normalized_passed.append("stage_ok")
+        else:
+            normalized_failed.append("stage_not_ok")
+
+        # derived_ready = all gates passed (no new failures from gates)
+        derived_ready = len(normalized_failed) == 0
 
     explain: SetupEngineExplain = {
         "passed_checks": normalized_passed,
@@ -286,15 +415,15 @@ def build_setup_engine_payload(
         "pivot_price": _to_float(pivot_price),
         "pivot_type": pivot_type,
         "pivot_date": normalize_iso_date(pivot_date),
-        "distance_to_pivot_pct": _to_float(distance_to_pivot_pct),
-        "atr14_pct": _to_float(atr14_pct),
+        "distance_to_pivot_pct": norm_distance,
+        "atr14_pct": norm_atr14,
         "atr14_pct_trend": _to_float(atr14_pct_trend),
         "bb_width_pct": _to_float(bb_width_pct),
         "bb_width_pctile_252": _to_float(bb_width_pctile_252),
-        "volume_vs_50d": _to_float(volume_vs_50d),
+        "volume_vs_50d": norm_volume,
         "rs": _to_float(rs),
         "rs_line_new_high": bool(rs_line_new_high),
-        "rs_vs_spy_65d": _to_float(rs_vs_spy_65d),
+        "rs_vs_spy_65d": norm_rs_vs_spy,
         "rs_vs_spy_trend_20d": _to_float(rs_vs_spy_trend_20d),
         "candidates": _normalize_candidates(
             candidates,

@@ -9,7 +9,10 @@ from app.analysis.patterns.models import (
     SETUP_ENGINE_REQUIRED_KEYS,
     validate_setup_engine_payload,
 )
-from app.analysis.patterns.config import SetupEngineParameters
+from app.analysis.patterns.config import (
+    SETUP_SCORE_WEIGHTS,
+    SetupEngineParameters,
+)
 from app.analysis.patterns.policy import evaluate_setup_engine_data_policy
 from app.analysis.patterns.report import ExplainPayload, SetupEngineReport
 from app.scanners.setup_engine_scanner import (
@@ -63,7 +66,9 @@ def test_numeric_field_specs_use_explicit_units():
 
 def test_build_payload_defaults_and_bool_semantics():
     payload = build_setup_engine_payload(
+        quality_score=75.0,
         readiness_score=82.0,
+        distance_to_pivot_pct=1.0,
         failed_checks=[],
     )
 
@@ -71,7 +76,11 @@ def test_build_payload_defaults_and_bool_semantics():
     assert payload["schema_version"] == "v1"
     assert payload["timeframe"] == "daily"
     assert payload["candidates"] == []
-    assert payload["explain"]["passed_checks"] == []
+    # Gates produce passed_checks entries.
+    assert "setup_score_ok" in payload["explain"]["passed_checks"]
+    assert "quality_floor_ok" in payload["explain"]["passed_checks"]
+    assert "readiness_floor_ok" in payload["explain"]["passed_checks"]
+    assert "in_early_zone" in payload["explain"]["passed_checks"]
     assert payload["explain"]["failed_checks"] == []
     assert payload["atr14_pct_trend"] is None
     assert payload["bb_width_pct"] is None
@@ -227,3 +236,235 @@ def test_build_payload_accepts_central_readiness_features_mapping():
     assert payload["rs_line_new_high"] is True
     assert payload["rs_vs_spy_65d"] == pytest.approx(8.5)
     assert payload["rs_vs_spy_trend_20d"] == pytest.approx(0.004)
+
+
+# ── SE-D4: Setup Score Synthesis and Gating Tests ─────────────────
+
+
+def _all_gates_pass_kwargs():
+    """Return kwargs that satisfy all 9 gates for setup_ready=True."""
+    return dict(
+        quality_score=75.0,
+        readiness_score=82.0,
+        distance_to_pivot_pct=1.0,
+        atr14_pct=3.5,
+        volume_vs_50d=1.2,
+        rs_vs_spy_65d=5.0,
+        rs_line_new_high=False,
+        candidates=[{
+            "pattern": "vcp",
+            "timeframe": "daily",
+            "confidence": 0.80,
+            "checks": {"stage_ok": True},
+        }],
+        pattern_primary="vcp",
+        failed_checks=[],
+    )
+
+
+class TestSetupScoreSynthesis:
+    """Tests for auto-computing setup_score from quality and readiness."""
+
+    def test_setup_score_auto_computed_from_quality_and_readiness(self):
+        payload = build_setup_engine_payload(
+            quality_score=80.0,
+            readiness_score=70.0,
+            distance_to_pivot_pct=1.0,
+        )
+        wq, wr = SETUP_SCORE_WEIGHTS
+        expected = wq * 80.0 + wr * 70.0
+        assert payload["setup_score"] == pytest.approx(expected)
+
+    def test_setup_score_explicit_overrides_auto_computation(self):
+        payload = build_setup_engine_payload(
+            setup_score=42.0,
+            quality_score=80.0,
+            readiness_score=70.0,
+        )
+        assert payload["setup_score"] == pytest.approx(42.0)
+
+    def test_setup_score_none_when_quality_missing(self):
+        payload = build_setup_engine_payload(readiness_score=80.0)
+        assert payload["setup_score"] is None
+
+    def test_setup_score_none_when_readiness_missing(self):
+        payload = build_setup_engine_payload(quality_score=80.0)
+        assert payload["setup_score"] is None
+
+    def test_setup_score_extracted_from_primary_candidate(self):
+        """When quality/readiness not passed but candidates+pattern_primary are, extract from candidate."""
+        payload = build_setup_engine_payload(
+            pattern_primary="vcp",
+            distance_to_pivot_pct=1.0,
+            candidates=[{
+                "pattern": "vcp",
+                "timeframe": "daily",
+                "quality_score": 72.0,
+                "readiness_score": 78.0,
+                "confidence": 0.75,
+                "checks": {"stage_ok": True},
+            }],
+        )
+        wq, wr = SETUP_SCORE_WEIGHTS
+        expected = wq * 72.0 + wr * 78.0
+        assert payload["setup_score"] == pytest.approx(expected)
+        assert payload["quality_score"] == pytest.approx(72.0)
+        assert payload["readiness_score"] == pytest.approx(78.0)
+
+
+class TestSetupReadyGates:
+    """Tests for the 9-gate setup_ready logic."""
+
+    def test_setup_ready_requires_setup_score_above_threshold(self):
+        params = SetupEngineParameters(setup_score_min_pct=80.0)
+        payload = build_setup_engine_payload(
+            quality_score=70.0,
+            readiness_score=70.0,
+            distance_to_pivot_pct=1.0,
+            parameters=params,
+        )
+        # setup_score = 0.60*70 + 0.40*70 = 70.0 < 80.0
+        assert payload["setup_ready"] is False
+        assert "setup_score_below_threshold" in payload["explain"]["failed_checks"]
+
+    def test_setup_ready_requires_quality_floor(self):
+        params = SetupEngineParameters(
+            quality_score_min_pct=80.0,
+            readiness_score_ready_min_pct=85.0,
+        )
+        payload = build_setup_engine_payload(
+            quality_score=75.0,
+            readiness_score=85.0,
+            distance_to_pivot_pct=1.0,
+            parameters=params,
+        )
+        assert payload["setup_ready"] is False
+        assert "quality_below_threshold" in payload["explain"]["failed_checks"]
+
+    def test_setup_ready_requires_readiness_floor(self):
+        params = SetupEngineParameters(readiness_score_ready_min_pct=85.0)
+        payload = build_setup_engine_payload(
+            quality_score=80.0,
+            readiness_score=75.0,
+            distance_to_pivot_pct=1.0,
+            parameters=params,
+        )
+        assert payload["setup_ready"] is False
+        assert "readiness_below_threshold" in payload["explain"]["failed_checks"]
+
+    def test_setup_ready_requires_early_zone(self):
+        payload = build_setup_engine_payload(
+            quality_score=80.0,
+            readiness_score=85.0,
+            distance_to_pivot_pct=10.0,  # way above early_zone_max=3.0
+        )
+        assert payload["setup_ready"] is False
+        assert "outside_early_zone" in payload["explain"]["failed_checks"]
+
+    def test_setup_ready_rs_ok_either_condition(self):
+        # rs_vs_spy_65d > 0 alone should pass
+        payload1 = build_setup_engine_payload(
+            **{**_all_gates_pass_kwargs(), "rs_vs_spy_65d": 2.0, "rs_line_new_high": False}
+        )
+        assert "rs_leadership_ok" in payload1["explain"]["passed_checks"]
+
+        # rs_line_new_high alone should pass
+        payload2 = build_setup_engine_payload(
+            **{**_all_gates_pass_kwargs(), "rs_vs_spy_65d": -1.0, "rs_line_new_high": True}
+        )
+        assert "rs_leadership_ok" in payload2["explain"]["passed_checks"]
+
+    def test_setup_ready_rs_ok_permissive_when_unavailable(self):
+        kwargs = _all_gates_pass_kwargs()
+        kwargs["rs_vs_spy_65d"] = None
+        kwargs["rs_line_new_high"] = None
+        payload = build_setup_engine_payload(**kwargs)
+        assert "rs_leadership_ok" in payload["explain"]["passed_checks"]
+        assert "rs_leadership_insufficient" not in payload["explain"]["failed_checks"]
+
+    def test_setup_ready_rs_fails_when_negative_and_no_new_high(self):
+        kwargs = _all_gates_pass_kwargs()
+        kwargs["rs_vs_spy_65d"] = -3.0
+        kwargs["rs_line_new_high"] = False
+        payload = build_setup_engine_payload(**kwargs)
+        assert payload["setup_ready"] is False
+        assert "rs_leadership_insufficient" in payload["explain"]["failed_checks"]
+
+    def test_setup_ready_atr14_gate(self):
+        kwargs = _all_gates_pass_kwargs()
+        kwargs["atr14_pct"] = 15.0  # exceeds default max of 8.0
+        payload = build_setup_engine_payload(**kwargs)
+        assert payload["setup_ready"] is False
+        assert "atr14_pct_exceeds_limit" in payload["explain"]["failed_checks"]
+
+    def test_setup_ready_volume_gate(self):
+        kwargs = _all_gates_pass_kwargs()
+        kwargs["volume_vs_50d"] = 0.5  # below default min of 1.0
+        payload = build_setup_engine_payload(**kwargs)
+        assert payload["setup_ready"] is False
+        assert "volume_below_minimum" in payload["explain"]["failed_checks"]
+
+    def test_setup_ready_stage_ok_from_candidate_checks(self):
+        kwargs = _all_gates_pass_kwargs()
+        kwargs["candidates"] = [{
+            "pattern": "vcp",
+            "timeframe": "daily",
+            "confidence": 0.80,
+            "checks": {"stage_ok": False},
+        }]
+        payload = build_setup_engine_payload(**kwargs)
+        assert payload["setup_ready"] is False
+        assert "stage_not_ok" in payload["explain"]["failed_checks"]
+
+    def test_setup_ready_all_gates_pass(self):
+        payload = build_setup_engine_payload(**_all_gates_pass_kwargs())
+        assert payload["setup_ready"] is True
+        passed = payload["explain"]["passed_checks"]
+        assert "setup_score_ok" in passed
+        assert "quality_floor_ok" in passed
+        assert "readiness_floor_ok" in passed
+        assert "in_early_zone" in passed
+        assert "atr14_within_limit" in passed
+        assert "volume_sufficient" in passed
+        assert "rs_leadership_ok" in passed
+        assert "stage_ok" in passed
+        assert payload["explain"]["failed_checks"] == []
+
+
+class TestGateExplainability:
+    """Tests for gate failure/pass check entries."""
+
+    def test_context_gate_failures_appear_in_failed_checks(self):
+        payload = build_setup_engine_payload(
+            quality_score=50.0,  # below default 60.0 floor
+            readiness_score=60.0,  # below default 70.0 floor
+            distance_to_pivot_pct=15.0,  # outside early zone
+        )
+        failed = payload["explain"]["failed_checks"]
+        assert "quality_below_threshold" in failed
+        assert "readiness_below_threshold" in failed
+        assert "outside_early_zone" in failed
+
+    def test_context_gate_passes_appear_in_passed_checks(self):
+        payload = build_setup_engine_payload(**_all_gates_pass_kwargs())
+        passed = payload["explain"]["passed_checks"]
+        assert len(passed) >= 8  # All 8 gate checks should be in passed
+
+    def test_gates_skipped_when_no_setup_score(self):
+        """Insufficient data produces no gate entries."""
+        payload = build_setup_engine_payload()  # No quality/readiness → no setup_score
+        assert payload["setup_score"] is None
+        assert payload["setup_ready"] is False
+        # No gate check names should appear
+        gate_names = {
+            "setup_score_ok", "setup_score_below_threshold",
+            "quality_floor_ok", "quality_below_threshold",
+            "readiness_floor_ok", "readiness_below_threshold",
+            "in_early_zone", "outside_early_zone",
+            "atr14_within_limit", "atr14_pct_exceeds_limit",
+            "volume_sufficient", "volume_below_minimum",
+            "rs_leadership_ok", "rs_leadership_insufficient",
+            "stage_ok", "stage_not_ok",
+        }
+        all_checks = set(payload["explain"]["passed_checks"]) | set(payload["explain"]["failed_checks"])
+        assert all_checks.isdisjoint(gate_names)

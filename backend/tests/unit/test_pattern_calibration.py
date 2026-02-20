@@ -7,7 +7,10 @@ from app.analysis.patterns.calibration import (
     aggregation_rank_score,
     calibrate_candidate_scores,
 )
-from app.analysis.patterns.config import DEFAULT_SETUP_ENGINE_PARAMETERS
+from app.analysis.patterns.config import (
+    CANDIDATE_SETUP_SCORE_WEIGHTS,
+    DEFAULT_SETUP_ENGINE_PARAMETERS,
+)
 from app.analysis.patterns.detectors.base import (
     PatternDetector,
     PatternDetectorInput,
@@ -245,3 +248,70 @@ def test_policy_insufficient_does_not_emit_calibration_applied_check():
 
     assert result.candidates == ()
     assert "cross_detector_calibration_applied" not in result.passed_checks
+
+
+# ── SE-D4: Per-candidate setup_score tests ────────────────────
+
+
+def test_calibrated_candidate_has_setup_score():
+    calibrated = calibrate_candidate_scores(
+        {
+            "pattern": "vcp",
+            "timeframe": "daily",
+            "source_detector": "vcp",
+            "quality_score": 72.0,
+            "readiness_score": 70.0,
+            "confidence": 0.68,
+            "metrics": {},
+            "checks": {},
+            "notes": [],
+        }
+    )
+
+    assert calibrated["setup_score"] is not None
+    assert 0.0 <= calibrated["setup_score"] <= 100.0
+
+
+def test_candidate_setup_score_formula():
+    calibrated = calibrate_candidate_scores(
+        {
+            "pattern": "vcp",
+            "timeframe": "daily",
+            "source_detector": "vcp",
+            "quality_score": 72.0,
+            "readiness_score": 70.0,
+            "confidence": 0.68,
+            "metrics": {},
+            "checks": {},
+            "notes": [],
+        }
+    )
+
+    wq, wr, wc = CANDIDATE_SETUP_SCORE_WEIGHTS
+    expected = (
+        wq * calibrated["quality_score"]
+        + wr * calibrated["readiness_score"]
+        + wc * (calibrated["confidence"] * 100.0)
+    )
+    assert calibrated["setup_score"] == pytest.approx(expected, abs=1e-4)
+
+
+def test_candidate_setup_score_method_in_metrics():
+    calibrated = calibrate_candidate_scores(
+        {
+            "pattern": "vcp",
+            "timeframe": "daily",
+            "source_detector": "vcp",
+            "quality_score": 72.0,
+            "readiness_score": 70.0,
+            "confidence": 0.68,
+            "metrics": {},
+            "checks": {},
+            "notes": [],
+        }
+    )
+
+    assert calibrated["metrics"]["setup_score_method"] == "candidate_blend_v1"
+    assert calibrated["metrics"]["candidate_setup_score"] == pytest.approx(
+        calibrated["setup_score"]
+    )

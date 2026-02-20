@@ -39,3 +39,19 @@ def test_validation_catches_contradictory_strict_relaxed():
     )
     errors = validate_setup_engine_parameters(params)
     assert any("strict must be <= relaxed" in err for err in errors)
+
+
+def test_setup_score_min_pct_bounds():
+    spec = next(
+        s for s in SETUP_ENGINE_PARAMETER_SPECS if s.name == "setup_score_min_pct"
+    )
+    assert spec.default_value == 65.0
+    assert spec.min_value == 30.0
+    assert spec.max_value == 95.0
+    assert spec.unit == "pct"
+    assert spec.profile == "baseline"
+
+    # Out of bounds triggers validation error.
+    params = SetupEngineParameters(setup_score_min_pct=10.0)
+    errors = validate_setup_engine_parameters(params)
+    assert any("setup_score_min_pct" in err for err in errors)
