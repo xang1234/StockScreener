@@ -291,6 +291,44 @@ class TestDetectSafe:
         result = det.detect_safe(_make_input(), DEFAULT_SETUP_ENGINE_PARAMETERS)
         assert result.outcome == DetectorOutcome.NOT_IMPLEMENTED
 
+    def test_coerces_candidates_to_canonical_shape(self):
+        """detect_safe() returns PatternCandidate dicts, not PatternCandidateModel."""
+
+        class _DetectorWithCandidate(PatternDetector):
+            name = "coerce_test"
+
+            def detect(self, detector_input, parameters):
+                model = PatternCandidateModel(
+                    pattern="vcp", timeframe="daily", confidence=0.75,
+                )
+                return PatternDetectorResult.detected(self.name, model)
+
+        det = _DetectorWithCandidate()
+        result = det.detect_safe(_make_input(), DEFAULT_SETUP_ENGINE_PARAMETERS)
+        assert result.outcome == DetectorOutcome.DETECTED
+        # Candidates should be coerced dicts, not PatternCandidateModel instances
+        cand = result.candidates[0]
+        assert isinstance(cand, dict)
+        assert cand["pattern"] == "vcp"
+        assert cand["confidence_pct"] == pytest.approx(75.0)
+
+    def test_catches_exception_in_detect_body(self):
+        """Exceptions during detect() (e.g. invalid model construction) are caught."""
+
+        class _ConstructionErrorDetector(PatternDetector):
+            name = "construct_err_test"
+
+            def detect(self, detector_input, parameters):
+                # Raises ValueError during __post_init__ — before result is built
+                PatternCandidateModel(
+                    pattern="test", timeframe="daily", setup_score=999.0
+                )
+
+        det = _ConstructionErrorDetector()
+        result = det.detect_safe(_make_input(), DEFAULT_SETUP_ENGINE_PARAMETERS)
+        assert result.outcome == DetectorOutcome.ERROR
+        assert "setup_score" in result.error_detail
+
     def test_catches_name_mismatch(self):
         class _MismatchDetector(PatternDetector):
             name = "mismatch_test"
@@ -304,14 +342,20 @@ class TestDetectSafe:
         assert "mismatch" in result.error_detail.lower()
 
     def test_catches_invalid_candidate(self):
+        """Candidate validation loop catches bad data in raw dicts.
+
+        Uses a PatternCandidate dict (not PatternCandidateModel) because
+        TypedDict has no runtime validation — the invalid setup_score
+        survives construction and is only caught during coercion inside
+        detect_safe().
+        """
+
         class _BadCandidateDetector(PatternDetector):
             name = "bad_cand_test"
 
             def detect(self, detector_input, parameters):
-                # Candidate with invalid score (> 100)
-                bad = PatternCandidateModel(
-                    pattern="test", timeframe="daily", setup_score=999.0
-                )
+                # Raw dict bypasses PatternCandidateModel.__post_init__
+                bad = {"pattern": "test", "timeframe": "daily", "setup_score": 999.0}
                 return PatternDetectorResult(
                     detector_name=self.name, candidates=(bad,)
                 )
@@ -320,6 +364,7 @@ class TestDetectSafe:
         result = det.detect_safe(_make_input(), DEFAULT_SETUP_ENGINE_PARAMETERS)
         assert result.outcome == DetectorOutcome.ERROR
         assert result.error_detail is not None
+        assert "setup_score" in result.error_detail
 
 
 # ---------------------------------------------------------------------------

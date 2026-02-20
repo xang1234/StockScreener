@@ -20,7 +20,7 @@ from app.analysis.patterns.detectors import (
     PatternDetectorInput,
     default_pattern_detectors,
 )
-from app.analysis.patterns.models import PatternCandidate, coerce_pattern_candidate
+from app.analysis.patterns.models import PatternCandidate
 from app.analysis.patterns.policy import (
     SetupEngineDataPolicyResult,
     policy_failed_checks,
@@ -87,13 +87,8 @@ class SetupEngineAggregator:
             passed_checks.extend(result.passed_checks)
             failed_checks.extend(result.failed_checks)
 
-            for raw_candidate in result.candidates:
-                candidates.append(
-                    coerce_pattern_candidate(
-                        raw_candidate,
-                        default_timeframe=detector_input.timeframe,
-                    )
-                )
+            # Candidates are already coerced by detect_safe().
+            candidates.extend(result.candidates)
 
         primary = _pick_primary_candidate(candidates)
 

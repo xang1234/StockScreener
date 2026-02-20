@@ -262,7 +262,9 @@ class PatternDetector(abc.ABC):
 
         - Catches all exceptions and converts to ``error`` outcome.
         - Validates ``detector_name`` matches ``self.name``.
-        - Validates all candidates are coercible to canonical shape.
+        - Coerces all candidates to canonical ``PatternCandidate`` shape
+          (using ``detector_input.timeframe`` as default) so the aggregator
+          does not need to re-coerce.
         """
         try:
             result = self.detect(detector_input, parameters)
@@ -286,10 +288,19 @@ class PatternDetector(abc.ABC):
             )
             return PatternDetectorResult.error(self.name, err)
 
-        # Validate candidates are coercible to canonical shape
+        # Coerce candidates to canonical shape (validates + normalizes).
+        if not result.candidates:
+            return result
+
+        coerced: list[PatternCandidate] = []
         for cand in result.candidates:
             try:
-                coerce_pattern_candidate(cand)
+                coerced.append(
+                    coerce_pattern_candidate(
+                        cand,
+                        default_timeframe=detector_input.timeframe,
+                    )
+                )
             except ValueError as exc:
                 logger.warning(
                     "Detector %s produced invalid candidate: %s",
@@ -298,4 +309,11 @@ class PatternDetector(abc.ABC):
                 )
                 return PatternDetectorResult.error(self.name, exc)
 
-        return result
+        return PatternDetectorResult(
+            detector_name=result.detector_name,
+            candidates=tuple(coerced),
+            passed_checks=result.passed_checks,
+            failed_checks=result.failed_checks,
+            warnings=result.warnings,
+            error_detail=result.error_detail,
+        )
