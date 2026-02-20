@@ -7,11 +7,15 @@ import pandas as pd
 
 import app.analysis.patterns.cup_handle as cup_module
 import app.analysis.patterns.high_tight_flag as htf_module
+import app.analysis.patterns.three_weeks_tight as twt_module
+import app.analysis.patterns.vcp_wrapper as vcp_module
 from app.analysis.patterns.config import DEFAULT_SETUP_ENGINE_PARAMETERS
 from app.analysis.patterns.cup_handle import CupHandleDetector
 from app.analysis.patterns.detectors import DetectorOutcome, PatternDetectorInput
 from app.analysis.patterns.first_pullback import FirstPullbackDetector
 from app.analysis.patterns.high_tight_flag import HighTightFlagDetector
+from app.analysis.patterns.three_weeks_tight import ThreeWeeksTightDetector
+from app.analysis.patterns.vcp_wrapper import VCPWrapperDetector
 
 
 def _ohlcv_frame(
@@ -45,6 +49,167 @@ def _ohlcv_frame(
         for key, values in extra_cols.items():
             frame[key] = values.astype(float)
     return frame
+
+
+def test_vcp_wrapper_maps_legacy_output_and_reverses_orientation(monkeypatch):
+    index = pd.bdate_range("2025-01-02", periods=220)
+    close = np.linspace(80.0, 130.0, len(index))
+    frame = _ohlcv_frame(index=index, close=close)
+    detector_input = PatternDetectorInput(
+        symbol="VCP",
+        timeframe="daily",
+        daily_bars=len(frame),
+        weekly_bars=60,
+        features={"daily_ohlcv": frame},
+    )
+
+    observed = {"first_price": None, "first_volume": None}
+
+    def _mock_detect_vcp(self, prices, volumes):  # noqa: ARG001
+        observed["first_price"] = float(prices.iloc[0])
+        observed["first_volume"] = float(volumes.iloc[0])
+        return {
+            "vcp_detected": True,
+            "vcp_score": 82.5,
+            "num_bases": 4,
+            "contracting_depth": True,
+            "contraction_ratio": 0.62,
+            "depth_score": 88.0,
+            "contracting_volume": True,
+            "volume_score": 74.0,
+            "tight_near_highs": True,
+            "tightness_score": 90.0,
+            "atr_score": 71.0,
+            "atr_contraction_ratio": 0.68,
+            "pivot_info": {
+                "pivot": 132.25,
+                "distance_pct": 1.8,
+                "ready_for_breakout": True,
+            },
+            "current_price": float(prices.iloc[0]),
+            "distance_from_high_pct": 1.2,
+        }
+
+    monkeypatch.setattr(vcp_module.VCPDetector, "detect_vcp", _mock_detect_vcp)
+    result = VCPWrapperDetector().detect_safe(
+        detector_input, DEFAULT_SETUP_ENGINE_PARAMETERS
+    )
+
+    assert result.outcome == DetectorOutcome.DETECTED
+    best = result.candidates[0]
+    assert best["pattern"] == "vcp"
+    assert best["pivot_type"] == "vcp_pivot"
+    assert best["quality_score"] == 82.5
+    assert best["checks"]["vcp_detected_by_legacy"] is True
+    assert observed["first_price"] == float(frame["Close"].iat[-1])
+    assert observed["first_volume"] == float(frame["Volume"].iat[-1])
+
+
+def test_vcp_wrapper_propagates_legacy_no_detection_checks(monkeypatch):
+    index = pd.bdate_range("2025-01-02", periods=220)
+    close = np.linspace(80.0, 130.0, len(index))
+    frame = _ohlcv_frame(index=index, close=close)
+    detector_input = PatternDetectorInput(
+        symbol="VCP",
+        timeframe="daily",
+        daily_bars=len(frame),
+        weekly_bars=60,
+        features={"daily_ohlcv": frame},
+    )
+
+    def _mock_detect_vcp(self, prices, volumes):  # noqa: ARG001
+        return {
+            "vcp_detected": False,
+            "vcp_score": 54.0,
+            "num_bases": 2,
+            "contracting_depth": False,
+            "tight_near_highs": False,
+        }
+
+    monkeypatch.setattr(vcp_module.VCPDetector, "detect_vcp", _mock_detect_vcp)
+    result = VCPWrapperDetector().detect_safe(
+        detector_input, DEFAULT_SETUP_ENGINE_PARAMETERS
+    )
+    assert result.outcome == DetectorOutcome.NOT_DETECTED
+    assert "vcp_score_below_legacy_threshold" in result.failed_checks
+    assert "vcp_insufficient_bases" in result.failed_checks
+
+
+def test_three_weeks_tight_detects_strict_mode_from_weekly_frame():
+    index = pd.date_range("2024-01-05", periods=30, freq="W-FRI")
+    close = np.concatenate(
+        [
+            np.linspace(70.0, 95.0, 24, endpoint=False),
+            np.array([100.0, 100.2, 99.9, 100.1, 100.0, 100.15]),
+        ]
+    )
+    frame = _ohlcv_frame(index=index, close=close)
+    detector_input = PatternDetectorInput(
+        symbol="3WT",
+        timeframe="weekly",
+        daily_bars=260,
+        weekly_bars=len(frame),
+        features={"weekly_ohlcv": frame},
+    )
+
+    result = ThreeWeeksTightDetector().detect_safe(
+        detector_input, DEFAULT_SETUP_ENGINE_PARAMETERS
+    )
+    assert result.outcome == DetectorOutcome.DETECTED
+    best = result.candidates[0]
+    assert best["pattern"] == "three_weeks_tight"
+    assert best["pivot_type"] == "tight_area_high"
+    assert best["metrics"]["weeks_tight"] >= 3
+    assert best["metrics"]["tight_mode"] == "strict"
+    assert best["checks"]["tight_band_ok"] is True
+
+
+def test_three_weeks_tight_uses_relaxed_mode_when_strict_fails():
+    index = pd.date_range("2024-01-05", periods=30, freq="W-FRI")
+    close = np.concatenate(
+        [
+            np.linspace(70.0, 95.0, 24, endpoint=False),
+            np.array([100.0, 101.1, 99.8, 100.6, 100.3, 100.7]),
+        ]
+    )
+    frame = _ohlcv_frame(index=index, close=close)
+    detector_input = PatternDetectorInput(
+        symbol="3WT",
+        timeframe="weekly",
+        daily_bars=260,
+        weekly_bars=len(frame),
+        features={"weekly_ohlcv": frame},
+    )
+
+    result = ThreeWeeksTightDetector().detect_safe(
+        detector_input, DEFAULT_SETUP_ENGINE_PARAMETERS
+    )
+    assert result.outcome == DetectorOutcome.DETECTED
+    best = result.candidates[0]
+    assert best["metrics"]["tight_mode"] == "relaxed"
+    assert best["checks"]["tight_mode_relaxed"] is True
+
+
+def test_three_weeks_tight_resamples_from_daily_when_weekly_absent():
+    index = pd.bdate_range("2025-01-02", periods=160)
+    close = np.linspace(70.0, 95.0, len(index))
+    close[-15:] = np.array(
+        [100.0, 100.2, 99.9, 100.1, 100.0, 100.1, 100.2, 100.15, 100.0, 100.1, 100.2, 100.05, 100.0, 100.1, 100.12]
+    )
+    daily = _ohlcv_frame(index=index, close=close)
+    detector_input = PatternDetectorInput(
+        symbol="3WT",
+        timeframe="daily",
+        daily_bars=len(daily),
+        weekly_bars=0,
+        features={"daily_ohlcv": daily},
+    )
+
+    result = ThreeWeeksTightDetector().detect_safe(
+        detector_input, DEFAULT_SETUP_ENGINE_PARAMETERS
+    )
+    assert result.outcome == DetectorOutcome.DETECTED
+    assert "weekly_ohlcv_resampled_from_daily" in result.warnings
 
 
 def test_high_tight_flag_returns_flag_validated_candidate():

@@ -97,8 +97,6 @@ def test_analysis_layer_modules_do_not_import_scanner_layer():
 
 def test_stub_modules_reference_followup_bead_todos():
     expected_todos = {
-        "SE-C1": vcp_wrapper_module,
-        "SE-C2": three_weeks_tight_module,
         "SE-C5": nr7_module,
     }
     for todo, module in expected_todos.items():

@@ -1,8 +1,8 @@
 # SE-B6 Detector and Aggregator Stub Contracts
 
 ## Explicit Entry Modules
-- `backend/app/analysis/patterns/vcp_wrapper.py` (`TODO(SE-C1)`)
-- `backend/app/analysis/patterns/three_weeks_tight.py` (`TODO(SE-C2)`)
+- `backend/app/analysis/patterns/vcp_wrapper.py` (implemented through SE-C1)
+- `backend/app/analysis/patterns/three_weeks_tight.py` (implemented through SE-C2)
 - `backend/app/analysis/patterns/high_tight_flag.py` (implemented through SE-C3b)
 - `backend/app/analysis/patterns/cup_handle.py` (implemented through SE-C4b)
 - `backend/app/analysis/patterns/nr7_inside_day.py` (`TODO(SE-C5)`)
@@ -12,7 +12,7 @@
 - Detector contract: `backend/app/analysis/patterns/detectors/base.py`
 - Aggregator contract: `backend/app/analysis/patterns/aggregator.py`
 
-All stubs are compile-safe and deterministic:
+Detector entrypoints are compile-safe and deterministic:
 - return typed `PatternDetectorResult`
 - emit explicit `insufficient_data` checks for no-data cases
 - avoid scanner-layer imports
