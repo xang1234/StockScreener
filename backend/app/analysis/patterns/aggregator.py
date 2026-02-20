@@ -63,6 +63,20 @@ class AggregatedPatternOutput:
     detector_traces: tuple[DetectorExecutionTrace, ...]
 
 
+@dataclass(frozen=True)
+class PrimarySelectionResult:
+    """Primary-candidate selection output with deterministic rationale fields."""
+
+    primary: PatternCandidate | None
+    used_confidence_fallback: bool
+    structural_tie_break_applied: bool
+    rationale: str
+
+
+_TRIGGER_PATTERN_FAMILIES = frozenset({"nr7_inside_day", "first_pullback"})
+_STRUCTURAL_TIE_EPSILON = 0.015
+
+
 class SetupEngineAggregator:
     """Run detectors and normalize candidates for setup_engine payload use."""
 
@@ -125,15 +139,16 @@ class SetupEngineAggregator:
         calibration_applied = bool(calibrated_candidates)
         candidates = calibrated_candidates
 
-        primary = _pick_primary_candidate(candidates)
-
         if policy_result is not None:
             failed_checks.extend(policy_failed_checks(policy_result))
             invalidation_flags.extend(policy_invalidation_flags(policy_result))
             if policy_result["status"] == "insufficient":
                 candidates = []
-                primary = None
                 calibration_applied = False
+
+        selection = _select_primary_candidate(candidates, parameters=parameters)
+        primary = selection.primary
+        diagnostics.append(selection.rationale)
 
         if calibration_applied and candidates:
             passed_checks.append("cross_detector_calibration_applied")
@@ -143,7 +158,13 @@ class SetupEngineAggregator:
         if primary is None:
             failed_checks.append("no_primary_pattern")
         else:
-            passed_checks.append("primary_pattern_selected")
+            if selection.used_confidence_fallback:
+                failed_checks.append("primary_pattern_below_confidence_floor")
+                passed_checks.append("primary_pattern_fallback_selected")
+            else:
+                passed_checks.append("primary_pattern_selected")
+            if selection.structural_tie_break_applied:
+                passed_checks.append("primary_pattern_structural_tie_break_applied")
             key_levels["pivot_price"] = primary.get("pivot_price")
 
         return AggregatedPatternOutput(
@@ -162,44 +183,162 @@ class SetupEngineAggregator:
         )
 
 
-def _pick_primary_candidate(candidates: Sequence[PatternCandidate]) -> PatternCandidate | None:
+def _select_primary_candidate(
+    candidates: Sequence[PatternCandidate],
+    *,
+    parameters: SetupEngineParameters,
+) -> PrimarySelectionResult:
     if not candidates:
+        return PrimarySelectionResult(
+            primary=None,
+            used_confidence_fallback=False,
+            structural_tie_break_applied=False,
+            rationale="primary_selection:no_candidates_available",
+        )
+
+    confidence_floor_pct = float(parameters.pattern_confidence_min_pct)
+    qualified = [
+        candidate
+        for candidate in candidates
+        if (_confidence_pct(candidate) is not None)
+        and (_confidence_pct(candidate) >= confidence_floor_pct)
+    ]
+
+    used_confidence_fallback = len(qualified) == 0
+    selection_pool = qualified if qualified else list(candidates)
+    primary, structural_tie_break_applied = _pick_primary_candidate(selection_pool)
+    if primary is None:
+        return PrimarySelectionResult(
+            primary=None,
+            used_confidence_fallback=used_confidence_fallback,
+            structural_tie_break_applied=False,
+            rationale="primary_selection:selection_pool_empty",
+        )
+
+    mode = (
+        "fallback_below_confidence_floor"
+        if used_confidence_fallback
+        else "qualified_rank_selection"
+    )
+    tie_break = (
+        "structural_tie_break_applied"
+        if structural_tie_break_applied
+        else "no_structural_tie_break"
+    )
+    return PrimarySelectionResult(
+        primary=primary,
+        used_confidence_fallback=used_confidence_fallback,
+        structural_tie_break_applied=structural_tie_break_applied,
+        rationale=(
+            f"primary_selection:{mode};{tie_break};"
+            f"min_confidence_pct={confidence_floor_pct:.2f}"
+        ),
+    )
+
+
+def _pick_primary_candidate(
+    candidates: Sequence[PatternCandidate],
+) -> tuple[PatternCandidate | None, bool]:
+    if not candidates:
+        return None, False
+
+    scored: list[tuple[PatternCandidate, int, float]] = [
+        (candidate, index, aggregation_rank_score(candidate))
+        for index, candidate in enumerate(candidates)
+    ]
+    base_winner = max(
+        scored,
+        key=lambda row: _rank_tie_break_key(
+            row[0],
+            rank_score=row[2],
+            index=row[1],
+        ),
+    )
+    base_candidate, _, base_rank_score = base_winner
+    if _is_structural_candidate(base_candidate):
+        return base_candidate, False
+
+    structural_close_candidates = [
+        row
+        for row in scored
+        if _is_structural_candidate(row[0])
+        and (base_rank_score - row[2]) <= _STRUCTURAL_TIE_EPSILON
+    ]
+    if not structural_close_candidates:
+        return base_candidate, False
+
+    structural_winner = max(
+        structural_close_candidates,
+        key=lambda row: _rank_tie_break_key(
+            row[0],
+            rank_score=row[2],
+            index=row[1],
+        ),
+    )
+    return structural_winner[0], True
+
+
+def _confidence_ratio(candidate: PatternCandidate) -> float:
+    raw = candidate.get("confidence")
+    if raw is None and candidate.get("confidence_pct") is not None:
+        raw = float(candidate["confidence_pct"]) / 100.0
+    if raw is None:
+        return float("-inf")
+    return float(raw)
+
+
+def _confidence_pct(candidate: PatternCandidate) -> float | None:
+    if candidate.get("confidence_pct") is not None:
+        return float(candidate["confidence_pct"])
+    confidence = candidate.get("confidence")
+    if confidence is None:
         return None
+    return float(confidence) * 100.0
 
-    def _confidence(candidate: PatternCandidate) -> float:
-        raw = candidate.get("confidence")
-        if raw is None and candidate.get("confidence_pct") is not None:
-            raw = float(candidate["confidence_pct"]) / 100.0
-        if raw is None:
-            return float("-inf")
-        return float(raw)
 
-    def _distance_score(candidate: PatternCandidate) -> float:
-        distance = candidate.get("distance_to_pivot_pct")
-        if distance is None:
-            return float("-inf")
-        return -abs(float(distance))
+def _distance_score(candidate: PatternCandidate) -> float:
+    distance = candidate.get("distance_to_pivot_pct")
+    if distance is None:
+        return float("-inf")
+    return -abs(float(distance))
 
-    def _score(candidate: PatternCandidate) -> tuple[float, float, float, float]:
-        confidence = _confidence(candidate)
-        quality = (
-            float(candidate.get("quality_score"))
-            if candidate.get("quality_score") is not None
-            else float("-inf")
-        )
-        readiness = (
-            float(candidate.get("readiness_score"))
-            if candidate.get("readiness_score") is not None
-            else float("-inf")
-        )
-        return (
-            aggregation_rank_score(candidate),
-            confidence,
-            readiness + quality,
-            _distance_score(candidate),
-        )
 
-    return max(candidates, key=_score)
+def _is_structural_candidate(candidate: PatternCandidate) -> bool:
+    family = str(
+        candidate.get("source_detector")
+        or candidate.get("pattern")
+        or ""
+    ).lower()
+    return family not in _TRIGGER_PATTERN_FAMILIES
+
+
+def _rank_tie_break_key(
+    candidate: PatternCandidate,
+    *,
+    rank_score: float,
+    index: int,
+) -> tuple[float, float, float, float, str, str, int]:
+    quality = (
+        float(candidate.get("quality_score"))
+        if candidate.get("quality_score") is not None
+        else float("-inf")
+    )
+    readiness = (
+        float(candidate.get("readiness_score"))
+        if candidate.get("readiness_score") is not None
+        else float("-inf")
+    )
+    pattern = str(candidate.get("pattern") or "")
+    source_detector = str(candidate.get("source_detector") or "")
+    return (
+        rank_score,
+        _confidence_ratio(candidate),
+        readiness + quality,
+        _distance_score(candidate),
+        pattern,
+        source_detector,
+        -index,
+    )
 
 
 def _stable_unique(values: Sequence[str]) -> list[str]:

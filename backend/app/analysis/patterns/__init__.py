@@ -36,6 +36,11 @@ from .report import (
     canonical_setup_engine_report_examples,
     validate_setup_engine_report_payload,
 )
+from .readiness import (
+    BreakoutReadinessFeatures,
+    compute_breakout_readiness_features,
+    readiness_features_to_payload_fields,
+)
 from .technicals import (
     average_true_range,
     bollinger_band_width_percent,
@@ -82,6 +87,9 @@ __all__ = [
     "validate_setup_engine_report_payload",
     "assert_valid_setup_engine_report_payload",
     "canonical_setup_engine_report_examples",
+    "BreakoutReadinessFeatures",
+    "compute_breakout_readiness_features",
+    "readiness_features_to_payload_fields",
     "resample_ohlcv",
     "has_incomplete_last_period",
     "true_range",

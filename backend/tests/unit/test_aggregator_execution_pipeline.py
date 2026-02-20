@@ -1,6 +1,6 @@
 """Tests for deterministic detector orchestration in the aggregator."""
 
-from app.analysis.patterns.aggregator import SetupEngineAggregator
+from app.analysis.patterns.aggregator import SetupEngineAggregator, _pick_primary_candidate
 from app.analysis.patterns.config import DEFAULT_SETUP_ENGINE_PARAMETERS
 from app.analysis.patterns.detectors.base import (
     PatternDetector,
@@ -86,3 +86,56 @@ def test_aggregator_trace_includes_detector_errors():
     assert trace.outcome == "error"
     assert trace.error_detail is not None
     assert "RuntimeError: boom" in trace.error_detail
+
+
+def test_primary_tie_break_prefers_structural_pattern_when_scores_are_close():
+    trigger_candidate = {
+        "pattern": "nr7_inside_day",
+        "timeframe": "daily",
+        "source_detector": "nr7_inside_day",
+        "quality_score": 80.0,
+        "readiness_score": 80.0,
+        "confidence": 0.74,
+    }
+    structural_candidate = {
+        "pattern": "vcp",
+        "timeframe": "daily",
+        "source_detector": "vcp",
+        "quality_score": 80.0,
+        "readiness_score": 80.0,
+        "confidence": 0.73,
+    }
+
+    primary, tie_break_applied = _pick_primary_candidate(
+        [trigger_candidate, structural_candidate]
+    )
+
+    assert primary is not None
+    assert primary["pattern"] == "vcp"
+    assert tie_break_applied is True
+
+
+def test_aggregator_falls_back_when_no_candidate_meets_confidence_floor():
+    class _LowConfidenceDetector(PatternDetector):
+        name = "detector_low_confidence"
+
+        def detect(self, detector_input, parameters):
+            del detector_input, parameters
+            return PatternDetectorResult.detected(
+                self.name,
+                PatternCandidateModel(
+                    pattern="detector_low_confidence",
+                    timeframe="daily",
+                    source_detector=self.name,
+                    quality_score=None,
+                    readiness_score=None,
+                    confidence=0.10,
+                ),
+            )
+
+    agg = SetupEngineAggregator(detectors=[_LowConfidenceDetector()])
+    result = agg.aggregate(_detector_input(), parameters=DEFAULT_SETUP_ENGINE_PARAMETERS)
+
+    assert result.pattern_primary == "detector_low_confidence"
+    assert "primary_pattern_fallback_selected" in result.passed_checks
+    assert "primary_pattern_below_confidence_floor" in result.failed_checks

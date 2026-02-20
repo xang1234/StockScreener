@@ -125,9 +125,14 @@ class SetupEngineReport:
 
     distance_to_pivot_pct: float | None = None
     atr14_pct: float | None = None
+    atr14_pct_trend: float | None = None
+    bb_width_pct: float | None = None
     bb_width_pctile_252: float | None = None
     volume_vs_50d: float | None = None
+    rs: float | None = None
     rs_line_new_high: bool = False
+    rs_vs_spy_65d: float | None = None
+    rs_vs_spy_trend_20d: float | None = None
 
     candidates: tuple[PatternCandidateModel | Mapping[str, Any], ...] = ()
     explain: ExplainPayload = field(default_factory=ExplainPayload)
@@ -159,9 +164,14 @@ class SetupEngineReport:
             "pivot_date": normalize_iso_date(self.pivot_date),
             "distance_to_pivot_pct": _as_float(self.distance_to_pivot_pct),
             "atr14_pct": _as_float(self.atr14_pct),
+            "atr14_pct_trend": _as_float(self.atr14_pct_trend),
+            "bb_width_pct": _as_float(self.bb_width_pct),
             "bb_width_pctile_252": _as_float(self.bb_width_pctile_252),
             "volume_vs_50d": _as_float(self.volume_vs_50d),
+            "rs": _as_float(self.rs),
             "rs_line_new_high": bool(self.rs_line_new_high),
+            "rs_vs_spy_65d": _as_float(self.rs_vs_spy_65d),
+            "rs_vs_spy_trend_20d": _as_float(self.rs_vs_spy_trend_20d),
             "candidates": normalized_candidates,
             "explain": self.explain.to_payload(),
         }

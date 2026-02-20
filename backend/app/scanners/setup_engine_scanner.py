@@ -36,6 +36,10 @@ from app.analysis.patterns.policy import (
     policy_failed_checks,
     policy_invalidation_flags,
 )
+from app.analysis.patterns.readiness import (
+    BreakoutReadinessFeatures,
+    readiness_features_to_payload_fields,
+)
 
 
 def _to_float(value: Any) -> float | None:
@@ -91,6 +95,33 @@ def _normalize_candidates(
     return normalized
 
 
+def _coerce_readiness_features(
+    value: BreakoutReadinessFeatures | Mapping[str, Any] | None,
+) -> BreakoutReadinessFeatures | None:
+    if value is None:
+        return None
+    if isinstance(value, BreakoutReadinessFeatures):
+        return value
+    if not isinstance(value, Mapping):
+        raise ValueError("readiness_features must be a mapping or BreakoutReadinessFeatures")
+
+    def _num_or_none(key: str) -> float | None:
+        return _to_float(value.get(key))
+
+    return BreakoutReadinessFeatures(
+        distance_to_pivot_pct=_num_or_none("distance_to_pivot_pct"),
+        atr14_pct=_num_or_none("atr14_pct"),
+        atr14_pct_trend=_num_or_none("atr14_pct_trend"),
+        bb_width_pct=_num_or_none("bb_width_pct"),
+        bb_width_pctile_252=_num_or_none("bb_width_pctile_252"),
+        volume_vs_50d=_num_or_none("volume_vs_50d"),
+        rs=_num_or_none("rs"),
+        rs_line_new_high=bool(value.get("rs_line_new_high", False)),
+        rs_vs_spy_65d=_num_or_none("rs_vs_spy_65d"),
+        rs_vs_spy_trend_20d=_num_or_none("rs_vs_spy_trend_20d"),
+    )
+
+
 def build_setup_engine_payload(
     *,
     setup_score: int | float | None = None,
@@ -104,9 +135,15 @@ def build_setup_engine_payload(
     pivot_date: str | date | datetime | None = None,
     distance_to_pivot_pct: int | float | None = None,
     atr14_pct: int | float | None = None,
+    atr14_pct_trend: int | float | None = None,
+    bb_width_pct: int | float | None = None,
     bb_width_pctile_252: int | float | None = None,
     volume_vs_50d: int | float | None = None,
-    rs_line_new_high: bool = False,
+    rs: int | float | None = None,
+    rs_line_new_high: bool | None = None,
+    rs_vs_spy_65d: int | float | None = None,
+    rs_vs_spy_trend_20d: int | float | None = None,
+    readiness_features: BreakoutReadinessFeatures | Mapping[str, Any] | None = None,
     candidates: Sequence[Mapping[str, Any] | PatternCandidateModel] | None = None,
     passed_checks: Sequence[Any] | None = None,
     failed_checks: Sequence[Any] | None = None,
@@ -153,6 +190,52 @@ def build_setup_engine_payload(
     normalized_quality_score = _to_float(quality_score)
     normalized_readiness_score = _to_float(readiness_score)
 
+    normalized_readiness = _coerce_readiness_features(readiness_features)
+    if normalized_readiness is not None:
+        readiness_values = readiness_features_to_payload_fields(normalized_readiness)
+        distance_to_pivot_pct = (
+            distance_to_pivot_pct
+            if distance_to_pivot_pct is not None
+            else readiness_values["distance_to_pivot_pct"]
+        )
+        atr14_pct = atr14_pct if atr14_pct is not None else readiness_values["atr14_pct"]
+        atr14_pct_trend = (
+            atr14_pct_trend
+            if atr14_pct_trend is not None
+            else readiness_values["atr14_pct_trend"]
+        )
+        bb_width_pct = (
+            bb_width_pct
+            if bb_width_pct is not None
+            else readiness_values["bb_width_pct"]
+        )
+        bb_width_pctile_252 = (
+            bb_width_pctile_252
+            if bb_width_pctile_252 is not None
+            else readiness_values["bb_width_pctile_252"]
+        )
+        volume_vs_50d = (
+            volume_vs_50d
+            if volume_vs_50d is not None
+            else readiness_values["volume_vs_50d"]
+        )
+        rs = rs if rs is not None else readiness_values["rs"]
+        rs_line_new_high = (
+            rs_line_new_high
+            if rs_line_new_high is not None
+            else bool(readiness_values["rs_line_new_high"])
+        )
+        rs_vs_spy_65d = (
+            rs_vs_spy_65d
+            if rs_vs_spy_65d is not None
+            else readiness_values["rs_vs_spy_65d"]
+        )
+        rs_vs_spy_trend_20d = (
+            rs_vs_spy_trend_20d
+            if rs_vs_spy_trend_20d is not None
+            else readiness_values["rs_vs_spy_trend_20d"]
+        )
+
     if data_policy_result is not None:
         normalized_failed.extend(policy_failed_checks(data_policy_result))
         normalized_flags.extend(policy_invalidation_flags(data_policy_result))
@@ -168,10 +251,15 @@ def build_setup_engine_payload(
             pivot_date = None
             distance_to_pivot_pct = None
             atr14_pct = None
+            atr14_pct_trend = None
+            bb_width_pct = None
             bb_width_pctile_252 = None
             volume_vs_50d = None
+            rs = None
             candidates = []
             rs_line_new_high = False
+            rs_vs_spy_65d = None
+            rs_vs_spy_trend_20d = None
 
     derived_ready = (
         (normalized_readiness_score is not None)
@@ -200,9 +288,14 @@ def build_setup_engine_payload(
         "pivot_date": normalize_iso_date(pivot_date),
         "distance_to_pivot_pct": _to_float(distance_to_pivot_pct),
         "atr14_pct": _to_float(atr14_pct),
+        "atr14_pct_trend": _to_float(atr14_pct_trend),
+        "bb_width_pct": _to_float(bb_width_pct),
         "bb_width_pctile_252": _to_float(bb_width_pctile_252),
         "volume_vs_50d": _to_float(volume_vs_50d),
+        "rs": _to_float(rs),
         "rs_line_new_high": bool(rs_line_new_high),
+        "rs_vs_spy_65d": _to_float(rs_vs_spy_65d),
+        "rs_vs_spy_trend_20d": _to_float(rs_vs_spy_trend_20d),
         "candidates": _normalize_candidates(
             candidates,
             default_timeframe=timeframe,

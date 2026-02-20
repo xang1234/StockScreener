@@ -36,9 +36,14 @@ This document is the canonical `setup_engine` contract for persistence and front
 | `pivot_date` | `YYYY-MM-DD` | yes | - | `backend/app/scanners/setup_engine_scanner.py` |
 | `distance_to_pivot_pct` | `float` | yes | `pct` | `backend/app/scanners/setup_engine_scanner.py` |
 | `atr14_pct` | `float` | yes | `pct` | `backend/app/scanners/setup_engine_scanner.py` |
+| `atr14_pct_trend` | `float` | yes | `pct` | `backend/app/scanners/setup_engine_scanner.py` |
+| `bb_width_pct` | `float` | yes | `pct` | `backend/app/scanners/setup_engine_scanner.py` |
 | `bb_width_pctile_252` | `float` | yes | `pct` | `backend/app/scanners/setup_engine_scanner.py` |
 | `volume_vs_50d` | `float` | yes | `ratio` | `backend/app/scanners/setup_engine_scanner.py` |
+| `rs` | `float` | yes | `ratio` | `backend/app/scanners/setup_engine_scanner.py` |
 | `rs_line_new_high` | `bool` | no | - | `backend/app/scanners/setup_engine_scanner.py` |
+| `rs_vs_spy_65d` | `float` | yes | `pct` | `backend/app/scanners/setup_engine_scanner.py` |
+| `rs_vs_spy_trend_20d` | `float` | yes | `ratio` | `backend/app/scanners/setup_engine_scanner.py` |
 | `candidates` | `list[PatternCandidate]` | no | - | `backend/app/scanners/setup_engine_scanner.py` |
 | `explain` | `SetupEngineExplain` | no | - | `backend/app/scanners/setup_engine_scanner.py` |
 

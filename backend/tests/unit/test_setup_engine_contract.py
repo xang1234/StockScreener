@@ -31,9 +31,14 @@ MANDATORY_V1_KEYS = {
     "pivot_date",
     "distance_to_pivot_pct",
     "atr14_pct",
+    "atr14_pct_trend",
+    "bb_width_pct",
     "bb_width_pctile_252",
     "volume_vs_50d",
+    "rs",
     "rs_line_new_high",
+    "rs_vs_spy_65d",
+    "rs_vs_spy_trend_20d",
     "candidates",
     "explain",
 }
@@ -68,6 +73,11 @@ def test_build_payload_defaults_and_bool_semantics():
     assert payload["candidates"] == []
     assert payload["explain"]["passed_checks"] == []
     assert payload["explain"]["failed_checks"] == []
+    assert payload["atr14_pct_trend"] is None
+    assert payload["bb_width_pct"] is None
+    assert payload["rs"] is None
+    assert payload["rs_vs_spy_65d"] is None
+    assert payload["rs_vs_spy_trend_20d"] is None
 
 
 def test_build_payload_failed_checks_forces_not_ready():
@@ -136,6 +146,11 @@ def test_policy_insufficient_nulls_primary_fields():
     assert payload["pattern_primary"] is None
     assert payload["candidates"] == []
     assert payload["setup_ready"] is False
+    assert payload["atr14_pct_trend"] is None
+    assert payload["bb_width_pct"] is None
+    assert payload["rs"] is None
+    assert payload["rs_vs_spy_65d"] is None
+    assert payload["rs_vs_spy_trend_20d"] is None
     assert "insufficient_data" in payload["explain"]["failed_checks"]
 
 
@@ -184,3 +199,31 @@ def test_build_payload_from_typed_report():
     payload = build_setup_engine_payload_from_report(report)
     assert payload["schema_version"] == "v1"
     assert payload["pattern_primary"] == "vcp"
+
+
+def test_build_payload_accepts_central_readiness_features_mapping():
+    payload = build_setup_engine_payload(
+        readiness_features={
+            "distance_to_pivot_pct": -1.2,
+            "atr14_pct": 3.4,
+            "atr14_pct_trend": -0.02,
+            "bb_width_pct": 7.8,
+            "bb_width_pctile_252": 26.0,
+            "volume_vs_50d": 1.15,
+            "rs": 1.32,
+            "rs_line_new_high": True,
+            "rs_vs_spy_65d": 8.5,
+            "rs_vs_spy_trend_20d": 0.004,
+        }
+    )
+
+    assert payload["distance_to_pivot_pct"] == pytest.approx(-1.2)
+    assert payload["atr14_pct"] == pytest.approx(3.4)
+    assert payload["atr14_pct_trend"] == pytest.approx(-0.02)
+    assert payload["bb_width_pct"] == pytest.approx(7.8)
+    assert payload["bb_width_pctile_252"] == pytest.approx(26.0)
+    assert payload["volume_vs_50d"] == pytest.approx(1.15)
+    assert payload["rs"] == pytest.approx(1.32)
+    assert payload["rs_line_new_high"] is True
+    assert payload["rs_vs_spy_65d"] == pytest.approx(8.5)
+    assert payload["rs_vs_spy_trend_20d"] == pytest.approx(0.004)

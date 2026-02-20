@@ -27,6 +27,22 @@
 - A small per-detector bias adjusts family aggressiveness (example: trigger patterns are slightly penalized vs base-structure patterns).
 - Resulting confidence means the same thing for every detector: relative confidence after family-aware normalization.
 
+## Primary Selection Tie-Break and Fallback Policy
+- Primary rank uses weighted composite score:
+  - confidence (`55%`)
+  - quality (`25%`)
+  - readiness (`20%`)
+- Deterministic tie-breaks (in order):
+  - higher confidence
+  - higher combined readiness+quality
+  - smaller absolute distance-to-pivot
+  - lexical pattern/detector key (stable reproducibility)
+- Structural preference rule:
+  - if top-ranked candidate is a trigger-family setup and a structural setup is within `0.015` rank-score points, prefer the structural setup.
+- Fallback rule:
+  - candidates below `pattern_confidence_min_pct` are excluded from normal primary selection
+  - if none qualify, select deterministic best-effort fallback and emit explicit fallback checks
+
 ## Canonical Metric Keys Added to Every Candidate
 - `calibration_version`
 - `calibration_source_detector`

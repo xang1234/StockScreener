@@ -85,9 +85,14 @@ class SetupEnginePayload(TypedDict):
 
     distance_to_pivot_pct: float | None
     atr14_pct: float | None
+    atr14_pct_trend: float | None
+    bb_width_pct: float | None
     bb_width_pctile_252: float | None
     volume_vs_50d: float | None
+    rs: float | None
     rs_line_new_high: bool
+    rs_vs_spy_65d: float | None
+    rs_vs_spy_trend_20d: float | None
 
     candidates: list[PatternCandidate]
     explain: SetupEngineExplain
@@ -317,6 +322,22 @@ SETUP_ENGINE_FIELD_SPECS: tuple[SetupEngineFieldSpec, ...] = (
         description="ATR(14) as a percentage of current price.",
     ),
     SetupEngineFieldSpec(
+        name="atr14_pct_trend",
+        type_name="float",
+        nullable=True,
+        unit="pct",
+        source_module="backend/app/scanners/setup_engine_scanner.py",
+        description="20-bar slope of ATR14 percent.",
+    ),
+    SetupEngineFieldSpec(
+        name="bb_width_pct",
+        type_name="float",
+        nullable=True,
+        unit="pct",
+        source_module="backend/app/scanners/setup_engine_scanner.py",
+        description="Current Bollinger width percent ((upper-lower)/middle*100).",
+    ),
+    SetupEngineFieldSpec(
         name="bb_width_pctile_252",
         type_name="float",
         nullable=True,
@@ -333,12 +354,36 @@ SETUP_ENGINE_FIELD_SPECS: tuple[SetupEngineFieldSpec, ...] = (
         description="Volume / 50-day average volume ratio.",
     ),
     SetupEngineFieldSpec(
+        name="rs",
+        type_name="float",
+        nullable=True,
+        unit="ratio",
+        source_module="backend/app/scanners/setup_engine_scanner.py",
+        description="Relative-strength line ratio (close / benchmark close).",
+    ),
+    SetupEngineFieldSpec(
         name="rs_line_new_high",
         type_name="bool",
         nullable=False,
         unit=None,
         source_module="backend/app/scanners/setup_engine_scanner.py",
         description="True when RS line has made a new high for timeframe.",
+    ),
+    SetupEngineFieldSpec(
+        name="rs_vs_spy_65d",
+        type_name="float",
+        nullable=True,
+        unit="pct",
+        source_module="backend/app/scanners/setup_engine_scanner.py",
+        description="65-session percent change in RS line.",
+    ),
+    SetupEngineFieldSpec(
+        name="rs_vs_spy_trend_20d",
+        type_name="float",
+        nullable=True,
+        unit="ratio",
+        source_module="backend/app/scanners/setup_engine_scanner.py",
+        description="20-session slope of RS line.",
     ),
     SetupEngineFieldSpec(
         name="candidates",
@@ -404,9 +449,14 @@ SETUP_ENGINE_REQUIRED_KEYS: tuple[str, ...] = (
     "pivot_date",
     "distance_to_pivot_pct",
     "atr14_pct",
+    "atr14_pct_trend",
+    "bb_width_pct",
     "bb_width_pctile_252",
     "volume_vs_50d",
+    "rs",
     "rs_line_new_high",
+    "rs_vs_spy_65d",
+    "rs_vs_spy_trend_20d",
     "candidates",
     "explain",
 )
