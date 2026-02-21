@@ -93,3 +93,28 @@ export const formatRatio = (value, decimals = 2) => {
   if (value == null) return '-';
   return value.toFixed(decimals);
 };
+
+/**
+ * Convert snake_case pattern name to Title Case
+ * @param {string|null} name - Snake case name (e.g., "three_weeks_tight")
+ * @returns {string} Title case name (e.g., "Three Weeks Tight")
+ */
+export const formatPatternName = (name) => {
+  if (!name) return '-';
+  return name
+    .split('_')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+};
+
+/**
+ * Get color for a 0-100 score: green >= 70, amber >= 40, red < 40
+ * @param {number|null} score - Score value 0-100
+ * @returns {string|undefined} Hex color or undefined for null
+ */
+export const getScoreColor = (score) => {
+  if (score == null) return undefined;
+  if (score >= 70) return '#4caf50';
+  if (score >= 40) return '#ff9800';
+  return '#f44336';
+};

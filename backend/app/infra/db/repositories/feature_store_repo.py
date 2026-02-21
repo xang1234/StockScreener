@@ -577,6 +577,26 @@ def _map_feature_to_scan_result(
         "week_52_low_distance": d.get("above_52w_low_pct"),
     }
 
+    # Setup Engine fields (extracted from details JSON blob)
+    _se = d.get("setup_engine", {}) or {}
+    extended["se_setup_score"] = _se.get("setup_score")
+    extended["se_pattern_primary"] = _se.get("pattern_primary")
+    extended["se_distance_to_pivot_pct"] = _se.get("distance_to_pivot_pct")
+    extended["se_bb_width_pctile_252"] = _se.get("bb_width_pctile_252")
+    extended["se_volume_vs_50d"] = _se.get("volume_vs_50d")
+    extended["se_rs_line_new_high"] = _se.get("rs_line_new_high")
+    extended["se_pivot_price"] = _se.get("pivot_price")
+    extended["se_setup_ready"] = _se.get("setup_ready")
+    extended["se_quality_score"] = _se.get("quality_score")
+    extended["se_readiness_score"] = _se.get("readiness_score")
+    extended["se_pattern_confidence"] = _se.get("pattern_confidence")
+    extended["se_pivot_type"] = _se.get("pivot_type")
+    extended["se_pivot_date"] = _se.get("pivot_date")
+    extended["se_timeframe"] = _se.get("timeframe")
+    extended["se_atr14_pct"] = _se.get("atr14_pct")
+    extended["se_explain"] = _se.get("explain")
+    extended["se_candidates"] = _se.get("candidates")
+
     return ScanResultItemDomain(
         symbol=row.symbol,
         composite_score=clamped_score,

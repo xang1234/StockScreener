@@ -528,6 +528,17 @@ def _map_row_to_domain(
     extended["se_pivot_price"] = se_data.get("pivot_price")
     extended["se_setup_ready"] = se_data.get("setup_ready")
 
+    # Additional SE fields for explain drawer
+    extended["se_quality_score"] = se_data.get("quality_score")
+    extended["se_readiness_score"] = se_data.get("readiness_score")
+    extended["se_pattern_confidence"] = se_data.get("pattern_confidence")
+    extended["se_pivot_type"] = se_data.get("pivot_type")
+    extended["se_pivot_date"] = se_data.get("pivot_date")
+    extended["se_timeframe"] = se_data.get("timeframe")
+    extended["se_atr14_pct"] = se_data.get("atr14_pct")
+    extended["se_explain"] = se_data.get("explain")
+    extended["se_candidates"] = se_data.get("candidates")
+
     # Clamp score to 0-100 to satisfy domain invariant; legacy data may exceed.
     raw_score = result.composite_score or 0
     clamped_score = max(0.0, min(100.0, float(raw_score)))

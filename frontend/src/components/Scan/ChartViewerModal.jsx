@@ -24,6 +24,7 @@ import { buildFilterParams, getFilterCacheKey } from '../../utils/filterUtils';
 import CandlestickChart from '../Charts/CandlestickChart';
 import StockMetricsSidebar from './StockMetricsSidebar';
 import PeerComparisonModal from './PeerComparisonModal';
+import SetupEngineDrawer from './SetupEngineDrawer';
 import AddToWatchlistMenu from '../common/AddToWatchlistMenu';
 import { getGroupRankColor } from '../../utils/colorUtils';
 
@@ -52,6 +53,7 @@ function ChartViewerModal({
 }) {
   const queryClient = useQueryClient();
   const [peerModalOpen, setPeerModalOpen] = useState(false);
+  const [setupDrawerOpen, setSetupDrawerOpen] = useState(false);
   const [visibleRange, setVisibleRange] = useState(null); // Persist zoom across symbol navigation
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
 
@@ -130,9 +132,21 @@ function ChartViewerModal({
     if (!open) return;
 
     const handleKeyDown = (e) => {
-      // Escape to close
+      // Escape: close drawer first, then modal
       if (e.key === 'Escape') {
+        if (setupDrawerOpen) {
+          setSetupDrawerOpen(false);
+          return;
+        }
         onClose();
+        return;
+      }
+
+      // D to toggle setup drawer (only when explain data exists)
+      if (e.key === 'd' || e.key === 'D') {
+        if (finalStockData?.se_explain) {
+          setSetupDrawerOpen((prev) => !prev);
+        }
         return;
       }
 
@@ -149,11 +163,12 @@ function ChartViewerModal({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, goNext, goPrevious, onClose]);
+  }, [open, goNext, goPrevious, onClose, setupDrawerOpen, finalStockData]);
 
-  // Reset description expansion when symbol changes
+  // Reset description expansion and setup drawer when symbol changes
   useEffect(() => {
     setDescriptionExpanded(false);
+    setSetupDrawerOpen(false);
   }, [currentSymbol]);
 
   // Prefetch adjacent stocks for smooth navigation with staggered timing
@@ -220,6 +235,7 @@ function ChartViewerModal({
         onClose={onClose}
         aria-labelledby="chart-viewer-modal"
         closeAfterTransition
+        disableEscapeKeyDown
       >
         <Fade in={open}>
           <Box
@@ -434,6 +450,7 @@ function ChartViewerModal({
                 stockData={finalStockData}
                 fundamentals={fundamentals}
                 onViewPeers={() => setPeerModalOpen(true)}
+                onViewSetupDetails={() => setSetupDrawerOpen(true)}
               />
 
               {/* Chart Area */}
@@ -479,6 +496,9 @@ function ChartViewerModal({
             >
               <Chip icon={<KeyboardIcon />} label="Space: Next Stock" size="small" variant="outlined" />
               <Chip icon={<KeyboardIcon />} label="Shift+Space: Previous" size="small" variant="outlined" />
+              {finalStockData?.se_explain && (
+                <Chip icon={<KeyboardIcon />} label="D: Setup Details" size="small" variant="outlined" />
+              )}
               <Chip icon={<KeyboardIcon />} label="Esc: Close" size="small" variant="outlined" />
             </Box>
           </Box>
@@ -495,6 +515,13 @@ function ChartViewerModal({
           setPeerModalOpen(false);
           handleNavigateToSymbol(sym);
         }}
+      />
+
+      {/* Setup Engine Drawer */}
+      <SetupEngineDrawer
+        open={setupDrawerOpen}
+        onClose={() => setSetupDrawerOpen(false)}
+        stockData={finalStockData}
       />
     </>
   );

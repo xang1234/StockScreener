@@ -5,13 +5,14 @@ import TrendingDownIcon from '@mui/icons-material/TrendingDown';
 import TrendingFlatIcon from '@mui/icons-material/TrendingFlat';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CancelIcon from '@mui/icons-material/Cancel';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import {
   getStageColor,
   getRatingColor,
   getGrowthColorHex,
   getEpsRatingColor,
 } from '../../utils/colorUtils';
-import { formatMarketCap, formatPercent, formatRatio } from '../../utils/formatUtils';
+import { formatMarketCap, formatPercent, formatRatio, formatPatternName, getScoreColor } from '../../utils/formatUtils';
 
 // Alias for this component's usage (uses hex colors)
 const getGrowthColor = getGrowthColorHex;
@@ -68,7 +69,7 @@ const SectionHeader = ({ children }) => (
  * @param {Object} props.stockData - Stock result data from scan (optional for watchlists)
  * @param {Object} props.fundamentals - Fundamentals data from cache
  */
-function StockMetricsSidebar({ stockData, fundamentals, onViewPeers }) {
+function StockMetricsSidebar({ stockData, fundamentals, onViewPeers, onViewSetupDetails }) {
   // Show loading only if neither stockData nor fundamentals are available
   if (!stockData && !fundamentals) {
     return (
@@ -371,6 +372,59 @@ function StockMetricsSidebar({ stockData, fundamentals, onViewPeers }) {
                 <BoolIndicator value={stockData.vcp_ready_for_breakout} />
               </Box>
             </Box>
+          </Box>
+        </>
+      )}
+
+      {/* Setup Engine - Conditional, 2 column grid */}
+      {stockData.se_setup_score != null && (
+        <>
+          <Divider />
+          <Box>
+            <SectionHeader>SETUP ENGINE</SectionHeader>
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0.5 }}>
+              <MetricRow
+                label="Pattern"
+                value={formatPatternName(stockData.se_pattern_primary)}
+              />
+              <MetricRow
+                label="Confidence"
+                value={stockData.se_pattern_confidence != null ? `${stockData.se_pattern_confidence.toFixed(0)}%` : '-'}
+              />
+              <MetricRow
+                label="Setup"
+                value={stockData.se_setup_score?.toFixed(1) || '-'}
+                color={getScoreColor(stockData.se_setup_score)}
+              />
+              <MetricRow
+                label="Quality"
+                value={stockData.se_quality_score?.toFixed(1) || '-'}
+                color={getScoreColor(stockData.se_quality_score)}
+              />
+              <MetricRow
+                label="Readiness"
+                value={stockData.se_readiness_score?.toFixed(1) || '-'}
+                color={getScoreColor(stockData.se_readiness_score)}
+              />
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                  Ready
+                </Typography>
+                <BoolIndicator value={stockData.se_setup_ready} />
+              </Box>
+            </Box>
+            {stockData.se_explain && onViewSetupDetails && (
+              <Button
+                variant="outlined"
+                size="small"
+                fullWidth
+                startIcon={<InfoOutlinedIcon />}
+                onClick={onViewSetupDetails}
+                sx={{ textTransform: 'none', mt: 1, fontSize: '0.75rem' }}
+              >
+                View Setup Details
+              </Button>
+            )}
           </Box>
         </>
       )}

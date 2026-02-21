@@ -105,6 +105,15 @@ class ScanResultItem(BaseModel):
     se_rs_line_new_high: Optional[bool] = None
     se_pivot_price: Optional[float] = None
     se_setup_ready: Optional[bool] = None
+    se_quality_score: Optional[float] = None
+    se_readiness_score: Optional[float] = None
+    se_pattern_confidence: Optional[float] = None
+    se_pivot_type: Optional[str] = None
+    se_pivot_date: Optional[str] = None
+    se_timeframe: Optional[str] = None
+    se_atr14_pct: Optional[float] = None
+    se_explain: Optional[dict] = None
+    se_candidates: Optional[list] = None
 
     # Minervini fields
     rs_rating: Optional[float] = None
@@ -195,6 +204,15 @@ class ScanResultItem(BaseModel):
             se_rs_line_new_high=ef.get("se_rs_line_new_high"),
             se_pivot_price=ef.get("se_pivot_price"),
             se_setup_ready=ef.get("se_setup_ready"),
+            se_quality_score=ef.get("se_quality_score"),
+            se_readiness_score=ef.get("se_readiness_score"),
+            se_pattern_confidence=ef.get("se_pattern_confidence"),
+            se_pivot_type=ef.get("se_pivot_type"),
+            se_pivot_date=ef.get("se_pivot_date"),
+            se_timeframe=ef.get("se_timeframe"),
+            se_atr14_pct=ef.get("se_atr14_pct"),
+            se_explain=ef.get("se_explain"),
+            se_candidates=ef.get("se_candidates"),
             # Minervini fields
             rs_rating=ef.get("rs_rating"),
             rs_rating_1m=ef.get("rs_rating_1m"),
