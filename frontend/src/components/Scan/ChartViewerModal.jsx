@@ -132,13 +132,19 @@ function ChartViewerModal({
     if (!open) return;
 
     const handleKeyDown = (e) => {
-      // Escape: close drawer first, then modal
+      // Escape: close drawer first, then modal (always active, even in inputs)
       if (e.key === 'Escape') {
         if (setupDrawerOpen) {
           setSetupDrawerOpen(false);
           return;
         }
         onClose();
+        return;
+      }
+
+      // Skip navigation shortcuts when user is typing in an input/textarea
+      const tag = e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) {
         return;
       }
 
