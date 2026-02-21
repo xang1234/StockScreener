@@ -336,10 +336,10 @@ _NEGATIVE_CASES: list[tuple[str, dict, dict]] = []
 
 
 def _build_three_weeks_tight_too_wide() -> tuple[dict, dict]:
-    """Case 7: tight band too wide (3% > relaxed 1.5%).
+    """Case 7: tight band too wide — exceeds relaxed 1.5% threshold.
 
     Uptrend uses steep slope (20→95) so even 3-week windows have band > 1.5%.
-    The 3WT band formula is (max-min)/(2*median), so we need step/median > 3%.
+    The 3WT band formula is (max-min)/(2*median), a half-band measure.
     """
     index = pd.date_range("2023-01-06", periods=30, freq="W-FRI")
     uptrend = np.linspace(20, 95, 24)
@@ -361,9 +361,6 @@ def _build_three_weeks_tight_too_wide() -> tuple[dict, dict]:
 def _build_high_tight_flag_weak_pole() -> tuple[dict, dict]:
     """Case 8: pole return only 80% (below 100% threshold)."""
     index = pd.bdate_range("2023-01-02", periods=220)
-    base = np.linspace(50, 55, 150)
-    pole = np.linspace(55, 90, 30)  # 80% return (55 -> 90 is ~63%), need 50 -> 90 = 80%
-    # Adjust: start lower for exact 80% return
     base = np.linspace(40, 50, 150)
     pole = np.linspace(50, 90, 30)  # 80% return from 50
     flag = np.linspace(88, 85, 16)

@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
-
 from app.analysis.patterns.aggregator import SetupEngineAggregator
 from app.analysis.patterns.config import DEFAULT_SETUP_ENGINE_PARAMETERS
 from app.analysis.patterns.detectors import (
@@ -169,11 +167,11 @@ def test_golden_aggregator_vcp_vs_nr7(monkeypatch, golden_update):
 
 
 # ---------------------------------------------------------------------------
-# Case C: Deterministic linear data — no patterns detected
+# Case C: Deterministic exponential data — no patterns detected
 # ---------------------------------------------------------------------------
 
 
-def test_golden_aggregator_no_patterns_linear(golden_update):
+def test_golden_aggregator_no_patterns_exponential(golden_update):
     """Exponential growth data with all 7 detectors: no patterns detected.
 
     Exponential (compound) growth ensures constant percentage changes at all
@@ -220,7 +218,7 @@ def test_golden_aggregator_no_patterns_linear(golden_update):
     aggregator = SetupEngineAggregator(detectors=list(default_pattern_detectors()))
     output = aggregator.aggregate(inp, parameters=DEFAULT_SETUP_ENGINE_PARAMETERS)
     maybe_export_snapshot(
-        "aggregator_no_patterns_linear", output, golden_update,
+        "aggregator_no_patterns_exponential", output, golden_update,
         is_aggregation=True,
     )
 

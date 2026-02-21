@@ -15,7 +15,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app.analysis.patterns.config import DEFAULT_SETUP_ENGINE_PARAMETERS
 from app.analysis.patterns.detectors import (
     DetectorOutcome,
     PatternDetectorInput,
@@ -304,7 +303,19 @@ def assert_golden_match(
         )
 
     # Candidate-level assertions operate on the first candidate
+    _CANDIDATE_KEYS = {
+        "pattern", "pivot_type", "timeframe", "pivot_type_contains",
+        "confidence", "quality_score", "readiness_score",
+        "checks_true", "checks_false", "metrics_range", "pivot_approx",
+    }
     candidate = result.candidates[0] if result.candidates else None
+
+    if candidate is None and _CANDIDATE_KEYS & expectation.keys():
+        raise AssertionError(
+            "Expectation includes candidate-level keys "
+            f"{sorted(_CANDIDATE_KEYS & expectation.keys())} "
+            "but result has no candidates"
+        )
 
     if candidate is not None:
         if "pattern" in expectation or "pivot_type" in expectation or "timeframe" in expectation:
