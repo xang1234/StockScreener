@@ -255,9 +255,13 @@ class TestScanNotFound:
 
 
 class TestUnboundScanRaises:
-    """Scan exists but has no feature_run_id — raises EntityNotFoundError."""
+    """Scan exists but has no feature_run_id — falls back to legacy scan_results.
 
-    def test_unbound_scan_raises_feature_run_not_found(self):
+    When the legacy path also has no data for the symbol, an
+    EntityNotFoundError("ScanResult", ...) is raised.
+    """
+
+    def test_unbound_scan_falls_back_to_legacy_and_raises_scan_result_not_found(self):
         uow = FakeUnitOfWork()
         uow.scans.create(scan_id="scan-123", status="completed")  # no feature_run_id
         uc = ExplainStockUseCase()
@@ -265,7 +269,9 @@ class TestUnboundScanRaises:
         with pytest.raises(EntityNotFoundError) as exc_info:
             uc.execute(uow, _make_query())
 
-        assert exc_info.value.entity == "FeatureRun"
+        # Use case falls back to scan_results (dual-source), symbol not found there either
+        assert exc_info.value.entity == "ScanResult"
+        assert exc_info.value.identifier == "AAPL"
 
 
 # ── Tests: Result Not Found ────────────────────────────────────────────
