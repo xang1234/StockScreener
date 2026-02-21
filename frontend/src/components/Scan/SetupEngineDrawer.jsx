@@ -1,4 +1,4 @@
-import { Box, Chip, Drawer, IconButton, Typography } from '@mui/material';
+import { Alert, Box, Chip, Drawer, IconButton, Typography } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import CancelIcon from '@mui/icons-material/Cancel';
@@ -99,8 +99,18 @@ const CheckItem = ({ icon, text, color }) => (
 function SetupEngineDrawer({ open, onClose, stockData }) {
   if (!stockData) return null;
 
-  const explain = stockData.se_explain;
-  const candidates = stockData.se_candidates;
+  const explain =
+    stockData.se_explain && typeof stockData.se_explain === 'object' && !Array.isArray(stockData.se_explain)
+      ? stockData.se_explain
+      : null;
+  const candidates = Array.isArray(stockData.se_candidates) ? stockData.se_candidates : null;
+
+  const hasInsufficientData = explain?.invalidation_flags?.some(
+    (f) => typeof f === 'string' && (f === 'insufficient_data' || f.startsWith('data_policy:insufficient'))
+  );
+  const hasDegradedData = !hasInsufficientData && explain?.invalidation_flags?.some(
+    (f) => typeof f === 'string' && f.startsWith('data_policy:degraded')
+  );
 
   return (
     <Drawer
@@ -142,6 +152,18 @@ function SetupEngineDrawer({ open, onClose, stockData }) {
           </Typography>
         ) : (
           <>
+            {/* Data quality banners */}
+            {hasInsufficientData && (
+              <Alert severity="warning" sx={{ mb: 2 }}>
+                Insufficient historical data — scores and pattern detection are unavailable for this stock.
+              </Alert>
+            )}
+            {hasDegradedData && (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                Some data sources are degraded. Scores may be less reliable.
+              </Alert>
+            )}
+
             {/* Section 1: Setup Summary */}
             <DrawerSection title="SETUP SUMMARY">
               {/* Pattern + Confidence */}
@@ -164,11 +186,15 @@ function SetupEngineDrawer({ open, onClose, stockData }) {
               </Box>
 
               {/* Scores Grid */}
-              <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 1, mb: 1.5 }}>
-                <ScoreItem label="Setup" value={stockData.se_setup_score} />
-                <ScoreItem label="Quality" value={stockData.se_quality_score} />
-                <ScoreItem label="Readiness" value={stockData.se_readiness_score} />
-              </Box>
+              {(stockData.se_setup_score != null ||
+                stockData.se_quality_score != null ||
+                stockData.se_readiness_score != null) && (
+                <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 1, mb: 1.5 }}>
+                  <ScoreItem label="Setup" value={stockData.se_setup_score} />
+                  <ScoreItem label="Quality" value={stockData.se_quality_score} />
+                  <ScoreItem label="Readiness" value={stockData.se_readiness_score} />
+                </Box>
+              )}
 
               {/* Ready chip */}
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
@@ -276,7 +302,7 @@ function SetupEngineDrawer({ open, onClose, stockData }) {
             )}
 
             {/* Section 4: Key Levels */}
-            {explain.key_levels && Object.keys(explain.key_levels).length > 0 && (
+            {explain.key_levels && typeof explain.key_levels === 'object' && !Array.isArray(explain.key_levels) && Object.keys(explain.key_levels).length > 0 && (
               <DrawerSection title="KEY LEVELS">
                 {Object.entries(explain.key_levels).map(([name, price]) => (
                   <Box key={name} sx={{ display: 'flex', justifyContent: 'space-between', py: 0.25 }}>
@@ -284,7 +310,7 @@ function SetupEngineDrawer({ open, onClose, stockData }) {
                       {formatCheckName(name)}
                     </Typography>
                     <Typography variant="body2" fontWeight="medium" sx={{ fontSize: '0.78rem' }}>
-                      {price != null ? `$${Number(price).toFixed(2)}` : '-'}
+                      {price != null && Number.isFinite(Number(price)) ? `$${Number(price).toFixed(2)}` : '-'}
                     </Typography>
                   </Box>
                 ))}
@@ -310,7 +336,7 @@ function SetupEngineDrawer({ open, onClose, stockData }) {
               <DrawerSection title="PATTERN CANDIDATES">
                 {candidates.map((c, idx) => (
                   <Box
-                    key={`${c.pattern}-${idx}`}
+                    key={`${c.pattern || 'candidate'}-${idx}`}
                     sx={{
                       border: 1,
                       borderColor: 'divider',
@@ -384,7 +410,7 @@ function SetupEngineDrawer({ open, onClose, stockData }) {
                     )}
 
                     {/* Candidate checks */}
-                    {c.checks && Object.keys(c.checks).length > 0 && (
+                    {c.checks && typeof c.checks === 'object' && !Array.isArray(c.checks) && Object.keys(c.checks).length > 0 && (
                       <Box sx={{ mt: 0.5 }}>
                         {Object.entries(c.checks).map(([name, passed]) => (
                           <Box key={name} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, py: 0.1 }}>
