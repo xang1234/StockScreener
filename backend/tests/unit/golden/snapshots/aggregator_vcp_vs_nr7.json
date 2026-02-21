@@ -1,0 +1,150 @@
+{
+  "pattern_primary": "vcp",
+  "pattern_confidence": 95.0,
+  "pivot_price": 132.36712328767123,
+  "pivot_type": "vcp_pivot",
+  "candidate_count": 2,
+  "candidates": [
+    {
+      "pattern": "vcp",
+      "timeframe": "daily",
+      "source_detector": "vcp",
+      "pivot_price": 132.36712328767123,
+      "pivot_type": "vcp_pivot",
+      "pivot_date": null,
+      "distance_to_pivot_pct": 2.000000000000003,
+      "setup_score": 94.25,
+      "quality_score": 100.0,
+      "readiness_score": 85.0,
+      "confidence": 0.95,
+      "confidence_pct": 95.0,
+      "metrics": {
+        "num_bases": 4,
+        "vcp_score": 95.0,
+        "contraction_ratio": 0.55,
+        "depth_score": 95.0,
+        "volume_score": 90.0,
+        "tightness_score": 95.0,
+        "atr_score": 85.0,
+        "atr_contraction_ratio": 0.55,
+        "distance_from_high_pct": 1.5,
+        "distance_to_pivot_pct_legacy": 2.0,
+        "ready_for_breakout": true,
+        "calibration_version": "cross_detector_v1",
+        "calibration_source_detector": "vcp",
+        "raw_quality_score": 95.0,
+        "raw_readiness_score": 87.5,
+        "raw_confidence": 0.95,
+        "raw_confidence_pct": 95.0,
+        "normalized_quality_score_0_1": 1.0,
+        "normalized_readiness_score_0_1": 0.85,
+        "normalized_confidence_0_1": 1.0,
+        "calibrated_quality_score": 100.0,
+        "calibrated_readiness_score": 85.0,
+        "calibrated_confidence": 0.95,
+        "calibrated_confidence_pct": 95.0,
+        "aggregation_rank_score": 0.9425,
+        "candidate_setup_score": 94.25,
+        "setup_score_method": "candidate_blend_v1"
+      },
+      "checks": {
+        "vcp_detected_by_legacy": true,
+        "contracting_depth": true,
+        "contracting_volume": true,
+        "tight_near_highs": true,
+        "pivot_available": true
+      },
+      "notes": [
+        "legacy_vcp_wrapper_no_logic_fork",
+        "cross_detector_calibration_v1_applied"
+      ]
+    },
+    {
+      "pattern": "nr7_inside_day",
+      "timeframe": "daily",
+      "source_detector": "nr7_inside_day",
+      "pivot_price": 130.0716894977169,
+      "pivot_type": "nr7_inside_day_trigger_high",
+      "pivot_date": "2024-11-04",
+      "distance_to_pivot_pct": 0.2311752287121833,
+      "setup_score": 89.044585,
+      "quality_score": 100.0,
+      "readiness_score": 73.913043,
+      "confidence": 0.817502,
+      "confidence_pct": 81.7502,
+      "metrics": {
+        "trigger_rank": 1,
+        "trigger_subtype": "nr7_inside_day",
+        "trigger_is_nr7": true,
+        "trigger_is_inside_day": true,
+        "trigger_high": 130.0717,
+        "trigger_low": 129.4717,
+        "trigger_range_points": 0.6,
+        "trigger_range_pct": 0.461284,
+        "range_min_7d_points": 0.6,
+        "range_rank_7d": 1,
+        "trigger_volume": 400000.0,
+        "volume_mean_20d": 1000000.0,
+        "volume_ratio_20d": 0.4,
+        "ema21_trigger": 127.696139,
+        "close_above_ema21": true,
+        "trigger_recency_bars": 0,
+        "trigger_score": 0.91971,
+        "calibration_version": "cross_detector_v1",
+        "calibration_source_detector": "nr7_inside_day",
+        "raw_quality_score": 65.0,
+        "raw_readiness_score": 58.0,
+        "raw_confidence": 0.705841,
+        "raw_confidence_pct": 70.584056,
+        "normalized_quality_score_0_1": 1.0,
+        "normalized_readiness_score_0_1": 0.73913,
+        "normalized_confidence_0_1": 0.872139,
+        "calibrated_quality_score": 100.0,
+        "calibrated_readiness_score": 73.913043,
+        "calibrated_confidence": 0.817502,
+        "calibrated_confidence_pct": 81.7502,
+        "aggregation_rank_score": 0.847452,
+        "candidate_setup_score": 89.044585,
+        "setup_score_method": "candidate_blend_v1"
+      },
+      "checks": {
+        "trigger_detected": true,
+        "trigger_is_nr7": true,
+        "trigger_is_inside_day": true,
+        "trigger_is_combined": true,
+        "range_is_7d_min": true,
+        "inside_day_structure_valid": true,
+        "volume_not_expanded": true,
+        "context_close_above_ema21": true
+      },
+      "notes": [
+        "trigger_detector_lightweight_scoring",
+        "subtype_nr7_inside_day",
+        "cross_detector_calibration_v1_applied"
+      ]
+    }
+  ],
+  "passed_checks": [
+    "detected",
+    "legacy_vcp_detection_passed",
+    "nr7_inside_day_trigger_found",
+    "trigger_subtypes_labeled",
+    "cross_detector_calibration_applied",
+    "detector_pipeline_executed",
+    "primary_pattern_selected"
+  ],
+  "failed_checks": [],
+  "detector_trace_count": 2,
+  "detector_traces": [
+    {
+      "detector_name": "vcp",
+      "outcome": "detected",
+      "candidate_count": 1
+    },
+    {
+      "detector_name": "nr7_inside_day",
+      "outcome": "detected",
+      "candidate_count": 1
+    }
+  ]
+}

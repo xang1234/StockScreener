@@ -1,0 +1,12 @@
+{
+  "outcome": "not_detected",
+  "detector_name": "first_pullback",
+  "candidate_count": 0,
+  "passed_checks": [],
+  "failed_checks": [
+    "not_detected",
+    "no_ma_tests_detected"
+  ],
+  "warnings": [],
+  "candidates": []
+}

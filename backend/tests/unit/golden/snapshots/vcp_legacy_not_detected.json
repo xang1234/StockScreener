@@ -1,0 +1,15 @@
+{
+  "outcome": "not_detected",
+  "detector_name": "vcp",
+  "candidate_count": 0,
+  "passed_checks": [],
+  "failed_checks": [
+    "not_detected",
+    "vcp_contracting_depth_failed",
+    "vcp_tight_near_highs_failed",
+    "vcp_score_below_legacy_threshold",
+    "vcp_insufficient_bases"
+  ],
+  "warnings": [],
+  "candidates": []
+}

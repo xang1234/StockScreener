@@ -1,0 +1,12 @@
+{
+  "outcome": "not_detected",
+  "detector_name": "three_weeks_tight",
+  "candidate_count": 0,
+  "passed_checks": [],
+  "failed_checks": [
+    "not_detected",
+    "tight_run_not_found"
+  ],
+  "warnings": [],
+  "candidates": []
+}

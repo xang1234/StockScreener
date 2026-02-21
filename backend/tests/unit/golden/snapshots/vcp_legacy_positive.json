@@ -1,0 +1,50 @@
+{
+  "outcome": "detected",
+  "detector_name": "vcp",
+  "candidate_count": 1,
+  "passed_checks": [
+    "detected",
+    "legacy_vcp_detection_passed"
+  ],
+  "failed_checks": [],
+  "warnings": [],
+  "candidates": [
+    {
+      "pattern": "vcp",
+      "timeframe": "daily",
+      "source_detector": "vcp",
+      "pivot_price": 132.25,
+      "pivot_type": "vcp_pivot",
+      "pivot_date": null,
+      "distance_to_pivot_pct": 1.7307692307692308,
+      "setup_score": null,
+      "quality_score": 82.5,
+      "readiness_score": 79.28846153846153,
+      "confidence": 0.825,
+      "confidence_pct": 82.5,
+      "metrics": {
+        "num_bases": 4,
+        "vcp_score": 82.5,
+        "contraction_ratio": 0.62,
+        "depth_score": 88.0,
+        "volume_score": 74.0,
+        "tightness_score": 90.0,
+        "atr_score": 71.0,
+        "atr_contraction_ratio": 0.68,
+        "distance_from_high_pct": 1.2,
+        "distance_to_pivot_pct_legacy": 1.8,
+        "ready_for_breakout": true
+      },
+      "checks": {
+        "vcp_detected_by_legacy": true,
+        "contracting_depth": true,
+        "contracting_volume": true,
+        "tight_near_highs": true,
+        "pivot_available": true
+      },
+      "notes": [
+        "legacy_vcp_wrapper_no_logic_fork"
+      ]
+    }
+  ]
+}

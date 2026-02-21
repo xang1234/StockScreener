@@ -1,0 +1,63 @@
+{
+  "pattern_primary": null,
+  "pattern_confidence": null,
+  "pivot_price": null,
+  "pivot_type": null,
+  "candidate_count": 0,
+  "candidates": [],
+  "passed_checks": [
+    "detector_pipeline_executed"
+  ],
+  "failed_checks": [
+    "not_detected",
+    "cup_structure_not_found",
+    "tight_run_not_found",
+    "pole_return_below_threshold",
+    "no_ma_tests_detected",
+    "vcp_contracting_depth_failed",
+    "vcp_tight_near_highs_failed",
+    "vcp_score_below_legacy_threshold",
+    "vcp_insufficient_bases",
+    "nr7_inside_day_trigger_not_found",
+    "not_implemented",
+    "no_primary_pattern"
+  ],
+  "detector_trace_count": 7,
+  "detector_traces": [
+    {
+      "detector_name": "cup_with_handle",
+      "outcome": "not_detected",
+      "candidate_count": 0
+    },
+    {
+      "detector_name": "three_weeks_tight",
+      "outcome": "not_detected",
+      "candidate_count": 0
+    },
+    {
+      "detector_name": "high_tight_flag",
+      "outcome": "not_detected",
+      "candidate_count": 0
+    },
+    {
+      "detector_name": "first_pullback",
+      "outcome": "not_detected",
+      "candidate_count": 0
+    },
+    {
+      "detector_name": "vcp",
+      "outcome": "not_detected",
+      "candidate_count": 0
+    },
+    {
+      "detector_name": "nr7_inside_day",
+      "outcome": "not_detected",
+      "candidate_count": 0
+    },
+    {
+      "detector_name": "double_bottom",
+      "outcome": "not_implemented",
+      "candidate_count": 0
+    }
+  ]
+}

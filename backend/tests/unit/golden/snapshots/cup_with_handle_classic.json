@@ -1,0 +1,72 @@
+{
+  "outcome": "detected",
+  "detector_name": "cup_with_handle",
+  "candidate_count": 1,
+  "passed_checks": [
+    "detected",
+    "cup_structure_candidates_found",
+    "handle_candidates_validated"
+  ],
+  "failed_checks": [],
+  "warnings": [],
+  "candidates": [
+    {
+      "pattern": "cup_with_handle",
+      "timeframe": "weekly",
+      "source_detector": "cup_with_handle",
+      "pivot_price": 99.99,
+      "pivot_type": "handle_high",
+      "pivot_date": "2022-12-30",
+      "distance_to_pivot_pct": null,
+      "setup_score": null,
+      "quality_score": 100.0,
+      "readiness_score": 59.2,
+      "confidence": 0.9391368327786681,
+      "confidence_pct": 93.91368327786681,
+      "metrics": {
+        "cup_rank": 1,
+        "left_lip_date": "2022-07-01",
+        "cup_low_date": "2022-09-30",
+        "right_lip_date": "2022-12-23",
+        "handle_start_date": "2022-12-30",
+        "handle_end_date": "2022-12-30",
+        "left_lip_price": 106.0,
+        "cup_low_price": 71.28,
+        "right_lip_price": 104.0,
+        "cup_duration_weeks": 25,
+        "cup_depth_pct": 32.7547,
+        "recovery_strength_pct": 98.1132,
+        "curvature_balance_pct": 97.95,
+        "cup_recency_weeks": 25,
+        "handle_duration_weeks": 1,
+        "handle_high": 99.99,
+        "handle_low": 98.01,
+        "handle_depth_pct": 1.9802,
+        "handle_upper_half_floor": 88.64,
+        "handle_upper_half_margin_pct": 26.9873,
+        "right_side_volume_mean": 919230.7692,
+        "handle_volume_mean": 666666.6667,
+        "handle_volume_ratio_vs_right_side": 0.725244,
+        "handle_recency_weeks": 24,
+        "confidence_base": 0.939137,
+        "confidence_penalty_v_shape": 0.0,
+        "confidence_penalty_weak_handle": 0.0,
+        "confidence_after_penalties": 0.939137
+      },
+      "checks": {
+        "cup_duration_in_range": true,
+        "cup_depth_in_range": true,
+        "cup_recovery_in_range": true,
+        "cup_curvature_balanced": true,
+        "handle_duration_in_range": true,
+        "handle_depth_in_range": true,
+        "handle_in_upper_half": true,
+        "handle_volume_contracting": true
+      },
+      "notes": [
+        "cup_and_handle_validated",
+        "pivot_from_handle_high"
+      ]
+    }
+  ]
+}

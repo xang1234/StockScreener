@@ -1,0 +1,12 @@
+{
+  "outcome": "not_detected",
+  "detector_name": "cup_with_handle",
+  "candidate_count": 0,
+  "passed_checks": [],
+  "failed_checks": [
+    "not_detected",
+    "cup_structure_not_found"
+  ],
+  "warnings": [],
+  "candidates": []
+}

@@ -1,0 +1,75 @@
+{
+  "outcome": "detected",
+  "detector_name": "first_pullback",
+  "candidate_count": 1,
+  "passed_checks": [
+    "detected",
+    "ma_tests_identified"
+  ],
+  "failed_checks": [],
+  "warnings": [],
+  "candidates": [
+    {
+      "pattern": "first_pullback",
+      "timeframe": "daily",
+      "source_detector": "first_pullback",
+      "pivot_price": 110.595,
+      "pivot_type": "resumption_high",
+      "pivot_date": "2023-09-04",
+      "distance_to_pivot_pct": null,
+      "setup_score": null,
+      "quality_score": 41.31937961575036,
+      "readiness_score": 78.66178286551262,
+      "confidence": 0.7299372082708765,
+      "confidence_pct": 72.99372082708764,
+      "metrics": {
+        "ma_period_bars": 21,
+        "ma_touch_band_pct": 1.5,
+        "touch_separation_bars": 5,
+        "tests_count": 1,
+        "is_first_test": true,
+        "is_second_test": false,
+        "latest_test_close": 110.0,
+        "latest_test_low": 108.9,
+        "latest_test_ma": 108.5,
+        "ma_touch_distance_pct": 0.3687,
+        "pullback_span_bars": 1,
+        "pullback_high_price": 116.15,
+        "pullback_high_date": "2023-08-23",
+        "pullback_span_low": 108.9,
+        "pullback_depth_points": 7.25,
+        "pullback_depth_pct_from_high": 6.241929,
+        "resumption_high_price": 110.595,
+        "resumption_high_date": "2023-09-04",
+        "resumption_close": 109.5,
+        "resumption_ema10": 109.3905,
+        "resumption_volume_ratio_20d": 1.235955,
+        "resumption_trigger_offset_bars": 6,
+        "pivot_mode_chosen": "resumption_high",
+        "pivot_mode_alternate": "pullback_high",
+        "pivot_choice_reason": "resumption_trigger_confirmed",
+        "pullback_orderliness_score": 0.333194,
+        "pullback_avg_range_pct": 2.0,
+        "pullback_close_volatility_pct": 0.658258,
+        "pullback_lower_high_ratio": 0.058824
+      },
+      "checks": {
+        "ma_touch_detected": true,
+        "ma_touch_within_band": true,
+        "is_first_test": true,
+        "is_second_test": false,
+        "pullback_depth_positive": true,
+        "pullback_orderly": false,
+        "resumption_trigger_confirmed": true,
+        "resumption_price_reclaimed_ema10": true,
+        "resumption_volume_supportive": true,
+        "pivot_mode_pullback_high": false,
+        "pivot_mode_resumption_high": true
+      },
+      "notes": [
+        "ma_touch_test_counting_complete",
+        "resumption_trigger_evaluated"
+      ]
+    }
+  ]
+}

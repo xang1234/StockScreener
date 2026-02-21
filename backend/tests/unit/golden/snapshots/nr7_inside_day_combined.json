@@ -1,0 +1,61 @@
+{
+  "outcome": "detected",
+  "detector_name": "nr7_inside_day",
+  "candidate_count": 1,
+  "passed_checks": [
+    "detected",
+    "nr7_inside_day_trigger_found",
+    "trigger_subtypes_labeled"
+  ],
+  "failed_checks": [],
+  "warnings": [],
+  "candidates": [
+    {
+      "pattern": "nr7_inside_day",
+      "timeframe": "daily",
+      "source_detector": "nr7_inside_day",
+      "pivot_price": 112.0,
+      "pivot_type": "nr7_inside_day_trigger_high",
+      "pivot_date": "2024-03-11",
+      "distance_to_pivot_pct": 0.4484304932735426,
+      "setup_score": null,
+      "quality_score": 65.0,
+      "readiness_score": 58.0,
+      "confidence": 0.689225,
+      "confidence_pct": 68.9225,
+      "metrics": {
+        "trigger_rank": 1,
+        "trigger_subtype": "nr7_inside_day",
+        "trigger_is_nr7": true,
+        "trigger_is_inside_day": true,
+        "trigger_high": 112.0,
+        "trigger_low": 111.0,
+        "trigger_range_points": 1.0,
+        "trigger_range_pct": 0.892857,
+        "range_min_7d_points": 1.0,
+        "range_rank_7d": 1,
+        "trigger_volume": 400000.0,
+        "volume_mean_20d": 1000000.0,
+        "volume_ratio_20d": 0.4,
+        "ema21_trigger": 109.528514,
+        "close_above_ema21": true,
+        "trigger_recency_bars": 0,
+        "trigger_score": 0.8895
+      },
+      "checks": {
+        "trigger_detected": true,
+        "trigger_is_nr7": true,
+        "trigger_is_inside_day": true,
+        "trigger_is_combined": true,
+        "range_is_7d_min": true,
+        "inside_day_structure_valid": true,
+        "volume_not_expanded": true,
+        "context_close_above_ema21": true
+      },
+      "notes": [
+        "trigger_detector_lightweight_scoring",
+        "subtype_nr7_inside_day"
+      ]
+    }
+  ]
+}

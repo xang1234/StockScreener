@@ -1,0 +1,193 @@
+{
+  "outcome": "detected",
+  "detector_name": "three_weeks_tight",
+  "candidate_count": 5,
+  "passed_checks": [
+    "detected",
+    "tight_run_detected"
+  ],
+  "failed_checks": [],
+  "warnings": [],
+  "candidates": [
+    {
+      "pattern": "three_weeks_tight",
+      "timeframe": "weekly",
+      "source_detector": "three_weeks_tight",
+      "pivot_price": 101.202,
+      "pivot_type": "tight_area_high",
+      "pivot_date": "2023-06-30",
+      "distance_to_pivot_pct": 1.05042436345481,
+      "setup_score": null,
+      "quality_score": 94.50074962518735,
+      "readiness_score": 88.87556221889051,
+      "confidence": 0.900004997501249,
+      "confidence_pct": 90.0004997501249,
+      "metrics": {
+        "run_rank": 1,
+        "weeks_tight": 6,
+        "tight_mode": "strict",
+        "tight_mode_threshold_pct": 1.0,
+        "tight_band_pct": 0.149925,
+        "tight_range_pct": 2.29985,
+        "vol_vs_10w": 1.0,
+        "run_start_date": "2023-06-23",
+        "run_end_date": "2023-07-28",
+        "median_close": 100.05,
+        "recency_weeks": 0
+      },
+      "checks": {
+        "weeks_tight_min_met": true,
+        "tight_band_ok": true,
+        "tight_mode_strict": true,
+        "tight_mode_relaxed": false
+      },
+      "notes": [
+        "strict_relaxed_modes_evaluated"
+      ]
+    },
+    {
+      "pattern": "three_weeks_tight",
+      "timeframe": "weekly",
+      "source_detector": "three_weeks_tight",
+      "pivot_price": 101.202,
+      "pivot_type": "tight_area_high",
+      "pivot_date": "2023-06-30",
+      "distance_to_pivot_pct": 1.05042436345481,
+      "setup_score": null,
+      "quality_score": 88.00199800199812,
+      "readiness_score": 88.50149850149859,
+      "confidence": 0.8366799866799873,
+      "confidence_pct": 83.66799866799873,
+      "metrics": {
+        "run_rank": 2,
+        "weeks_tight": 5,
+        "tight_mode": "strict",
+        "tight_mode_threshold_pct": 1.0,
+        "tight_band_pct": 0.1998,
+        "tight_range_pct": 2.298701,
+        "vol_vs_10w": 1.0,
+        "run_start_date": "2023-06-30",
+        "run_end_date": "2023-07-28",
+        "median_close": 100.1,
+        "recency_weeks": 0
+      },
+      "checks": {
+        "weeks_tight_min_met": true,
+        "tight_band_ok": true,
+        "tight_mode_strict": true,
+        "tight_mode_relaxed": false
+      },
+      "notes": [
+        "strict_relaxed_modes_evaluated"
+      ]
+    },
+    {
+      "pattern": "three_weeks_tight",
+      "timeframe": "weekly",
+      "source_detector": "three_weeks_tight",
+      "pivot_price": 101.202,
+      "pivot_type": "tight_area_high",
+      "pivot_date": "2023-06-30",
+      "distance_to_pivot_pct": 1.05042436345481,
+      "setup_score": null,
+      "quality_score": 87.99999999999997,
+      "readiness_score": 85.99999999999997,
+      "confidence": 0.8366666666666664,
+      "confidence_pct": 83.66666666666664,
+      "metrics": {
+        "run_rank": 3,
+        "weeks_tight": 5,
+        "tight_mode": "strict",
+        "tight_mode_threshold_pct": 1.0,
+        "tight_band_pct": 0.2,
+        "tight_range_pct": 2.301,
+        "vol_vs_10w": 1.0,
+        "run_start_date": "2023-06-23",
+        "run_end_date": "2023-07-21",
+        "median_close": 100.0,
+        "recency_weeks": 1
+      },
+      "checks": {
+        "weeks_tight_min_met": true,
+        "tight_band_ok": true,
+        "tight_mode_strict": true,
+        "tight_mode_relaxed": false
+      },
+      "notes": [
+        "strict_relaxed_modes_evaluated"
+      ]
+    },
+    {
+      "pattern": "three_weeks_tight",
+      "timeframe": "weekly",
+      "source_detector": "three_weeks_tight",
+      "pivot_price": 101.15150000000001,
+      "pivot_type": "tight_area_high",
+      "pivot_date": "2023-07-28",
+      "distance_to_pivot_pct": 1.000000000000007,
+      "setup_score": null,
+      "quality_score": 82.5007496251875,
+      "readiness_score": 88.87556221889062,
+      "confidence": 0.78000499750125,
+      "confidence_pct": 78.000499750125,
+      "metrics": {
+        "run_rank": 4,
+        "weeks_tight": 4,
+        "tight_mode": "strict",
+        "tight_mode_threshold_pct": 1.0,
+        "tight_band_pct": 0.149925,
+        "tight_range_pct": 2.249375,
+        "vol_vs_10w": 1.0,
+        "run_start_date": "2023-07-07",
+        "run_end_date": "2023-07-28",
+        "median_close": 100.05,
+        "recency_weeks": 0
+      },
+      "checks": {
+        "weeks_tight_min_met": true,
+        "tight_band_ok": true,
+        "tight_mode_strict": true,
+        "tight_mode_relaxed": false
+      },
+      "notes": [
+        "strict_relaxed_modes_evaluated"
+      ]
+    },
+    {
+      "pattern": "three_weeks_tight",
+      "timeframe": "weekly",
+      "source_detector": "three_weeks_tight",
+      "pivot_price": 101.202,
+      "pivot_type": "tight_area_high",
+      "pivot_date": "2023-06-30",
+      "distance_to_pivot_pct": 1.05042436345481,
+      "setup_score": null,
+      "quality_score": 82.50074962518735,
+      "readiness_score": 86.37556221889051,
+      "confidence": 0.780004997501249,
+      "confidence_pct": 78.0004997501249,
+      "metrics": {
+        "run_rank": 5,
+        "weeks_tight": 4,
+        "tight_mode": "strict",
+        "tight_mode_threshold_pct": 1.0,
+        "tight_band_pct": 0.149925,
+        "tight_range_pct": 2.29985,
+        "vol_vs_10w": 1.0,
+        "run_start_date": "2023-06-30",
+        "run_end_date": "2023-07-21",
+        "median_close": 100.05,
+        "recency_weeks": 1
+      },
+      "checks": {
+        "weeks_tight_min_met": true,
+        "tight_band_ok": true,
+        "tight_mode_strict": true,
+        "tight_mode_relaxed": false
+      },
+      "notes": [
+        "strict_relaxed_modes_evaluated"
+      ]
+    }
+  ]
+}

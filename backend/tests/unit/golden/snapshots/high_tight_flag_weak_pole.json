@@ -1,0 +1,12 @@
+{
+  "outcome": "not_detected",
+  "detector_name": "high_tight_flag",
+  "candidate_count": 0,
+  "passed_checks": [],
+  "failed_checks": [
+    "not_detected",
+    "pole_return_below_threshold"
+  ],
+  "warnings": [],
+  "candidates": []
+}

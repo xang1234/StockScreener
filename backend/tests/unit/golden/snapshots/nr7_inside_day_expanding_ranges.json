@@ -1,0 +1,12 @@
+{
+  "outcome": "not_detected",
+  "detector_name": "nr7_inside_day",
+  "candidate_count": 0,
+  "passed_checks": [],
+  "failed_checks": [
+    "not_detected",
+    "nr7_inside_day_trigger_not_found"
+  ],
+  "warnings": [],
+  "candidates": []
+}
