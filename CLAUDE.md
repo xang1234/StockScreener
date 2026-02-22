@@ -115,6 +115,20 @@ export NVM_DIR="$HOME/.nvm" && [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 - `frontend/src/test/fixtures/` — shared test fixtures
 - `frontend/src/test/renderWithProviders.jsx` — MUI ThemeProvider test wrapper
 
+### Quality Gates (Setup Engine)
+```bash
+make help          # List all available targets
+make gates         # Run all 5 SE quality gates
+make gate-1        # Detector correctness
+make gate-2        # Temporal integrity
+make gate-3        # Integration coverage
+make gate-4        # Performance baselines (advisory)
+make gate-5        # Golden regression
+make gate-check    # Verify all SE test files are in a gate
+make all           # Full CI (backend gates + frontend)
+make golden-update # Regenerate golden snapshots
+```
+
 ### Diagnostic Scripts
 Utility scripts are in `backend/scripts/`:
 ```bash
