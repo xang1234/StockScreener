@@ -32,15 +32,13 @@ from app.domain.common.query import (
     SortOrder,
     SortSpec,
 )
-from app.domain.feature_store.models import RATING_TO_INT
-from app.domain.scanning.models import ResultPage, ScanResultItemDomain
 from app.infra.db.models.feature_store import FeatureRun, StockFeatureDaily
 from app.infra.db.repositories.feature_store_repo import SqlFeatureStoreRepository
 from app.infra.db.repositories.scan_result_repo import (
     SqlScanResultRepository,
     _map_orchestrator_result,
 )
-from app.models.scan_result import Scan, ScanResult
+from app.models.scan_result import Scan
 from app.models.stock_universe import StockUniverse
 from app.scanners.base_screener import ScreenerResult, StockData
 from app.scanners.scan_orchestrator import ScanOrchestrator
