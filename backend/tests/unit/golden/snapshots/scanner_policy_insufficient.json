@@ -1,0 +1,46 @@
+{
+  "score": 0.0,
+  "passes": false,
+  "rating": "Insufficient Data",
+  "breakdown": {},
+  "screener_name": "setup_engine",
+  "setup_engine": {
+    "schema_version": "v1",
+    "timeframe": "daily",
+    "setup_score": null,
+    "quality_score": null,
+    "readiness_score": null,
+    "setup_ready": false,
+    "pattern_primary": null,
+    "pattern_confidence": null,
+    "pivot_price": null,
+    "pivot_type": null,
+    "pivot_date": null,
+    "distance_to_pivot_pct": null,
+    "atr14_pct": null,
+    "atr14_pct_trend": null,
+    "bb_width_pct": null,
+    "bb_width_pctile_252": null,
+    "volume_vs_50d": null,
+    "rs": null,
+    "rs_line_new_high": false,
+    "rs_vs_spy_65d": null,
+    "rs_vs_spy_trend_20d": null,
+    "candidates": [],
+    "explain": {
+      "passed_checks": [],
+      "failed_checks": [
+        "insufficient_data",
+        "insufficient_daily_bars",
+        "insufficient_weekly_bars"
+      ],
+      "key_levels": {},
+      "invalidation_flags": [
+        "data_policy:insufficient",
+        "insufficient_daily_bars",
+        "insufficient_weekly_bars",
+        "missing_or_short_benchmark_history"
+      ]
+    }
+  }
+}

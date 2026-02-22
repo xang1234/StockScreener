@@ -1,0 +1,52 @@
+{
+  "score": 0.0,
+  "passes": false,
+  "rating": "Pass",
+  "breakdown": {},
+  "screener_name": "setup_engine",
+  "setup_engine": {
+    "schema_version": "v1",
+    "timeframe": "daily",
+    "setup_score": null,
+    "quality_score": null,
+    "readiness_score": null,
+    "setup_ready": false,
+    "pattern_primary": null,
+    "pattern_confidence": null,
+    "pivot_price": null,
+    "pivot_type": null,
+    "pivot_date": null,
+    "distance_to_pivot_pct": null,
+    "atr14_pct": 1.8560885608857163,
+    "atr14_pct_trend": -1.906628572650628e-14,
+    "bb_width_pct": 13.796053145003823,
+    "bb_width_pctile_252": 39.682539682539684,
+    "volume_vs_50d": 1.0,
+    "rs": 0.7610083219355059,
+    "rs_line_new_high": true,
+    "rs_vs_spy_65d": 40.786615616496036,
+    "rs_vs_spy_trend_20d": 0.003818808263349361,
+    "candidates": [],
+    "explain": {
+      "passed_checks": [
+        "detector_pipeline_executed"
+      ],
+      "failed_checks": [
+        "not_detected",
+        "cup_structure_not_found",
+        "tight_run_not_found",
+        "pole_return_below_threshold",
+        "no_ma_tests_detected",
+        "vcp_contracting_depth_failed",
+        "vcp_tight_near_highs_failed",
+        "vcp_score_below_legacy_threshold",
+        "vcp_insufficient_bases",
+        "nr7_inside_day_trigger_not_found",
+        "not_implemented",
+        "no_primary_pattern"
+      ],
+      "key_levels": {},
+      "invalidation_flags": []
+    }
+  }
+}
