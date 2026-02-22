@@ -267,7 +267,7 @@ export const mixedSeRow = {
 
 /**
  * Operational flags stock — includes operational invalidation flags
- * (too_extended + low_liquidity) for severity-aware rendering tests.
+ * (too_extended, low_liquidity, breaks_50d_support) for severity-aware rendering tests.
  */
 export const operationalFlagsStock = {
   ...fullPayloadStock,

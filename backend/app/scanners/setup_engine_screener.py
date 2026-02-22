@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import date
 from typing import Any, Dict, Optional
 
 import pandas as pd
@@ -242,7 +243,7 @@ class SetupEngineScanner(BaseStockScreener):
             + [f.to_payload() for f in operational_flags]
         )
 
-        # 14. Build canonical payload
+        # 14. Build canonical payload (operational flags merged with aggregator flags)
         payload = build_setup_engine_payload(
             pattern_primary=agg_output.pattern_primary,
             pattern_confidence=agg_output.pattern_confidence,
@@ -264,7 +265,7 @@ class SetupEngineScanner(BaseStockScreener):
 
         readiness_ms = (time.perf_counter() - t_readiness) * 1000.0
 
-        # 14. Package into ScreenerResult
+        # 15. Package into ScreenerResult
         score = payload["setup_score"] if payload["setup_score"] is not None else 0.0
         details: Dict[str, Any] = {"setup_engine": payload}
 

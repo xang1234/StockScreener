@@ -13,14 +13,11 @@ from __future__ import annotations
 
 from datetime import date
 
-import pytest
-
 from app.analysis.patterns.config import SetupEngineParameters
 from app.analysis.patterns.operational_flags import (
     OperationalFlagInputs,
     compute_operational_flags,
 )
-from app.analysis.patterns.report import InvalidationFlag
 
 
 DEFAULT_PARAMS = SetupEngineParameters()
